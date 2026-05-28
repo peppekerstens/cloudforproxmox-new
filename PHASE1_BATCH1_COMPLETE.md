@@ -144,7 +144,9 @@ d2e6316 fix: correct docker-compose.yml build paths
 
 **Snapshots:**
 - `snapshot-upstream-final-cors-fixed` (baseline)
-- `phase-1-batch-1-final` (Batch 1 final)
+- `phase-1-batch-1-final` (Batch 1 final) ✅ CREATED
+  - UPID: UPID:pve2:0018BE43:0655C573:6A18A9E3:qmsnapshot:103:root@pam!mcp-server
+  - Description: Batch 1 final: 16 commits, 8/8 containers healthy, login verified, security hardened
 
 ---
 
