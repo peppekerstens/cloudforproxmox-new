@@ -4,7 +4,7 @@ API endpoints for Proxmox Cluster management.
 from typing import Optional
 from uuid import UUID
 import uuid as uuid_lib
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -217,8 +217,8 @@ async def delete_cluster(
         )
 
     # Soft delete
-    from datetime import datetime
-    cluster.deleted_at = datetime.utcnow()
+    from datetime import datetime, timezone
+    cluster.deleted_at = datetime.now(timezone.utc)
     await db.commit()
 
     return None
@@ -322,10 +322,10 @@ async def sync_cluster_resources(
         total_memory_mb = sum(node.get("maxmem", 0) for node in nodes) // (1024 * 1024) if nodes else 0
 
         # Update cluster
-        from datetime import datetime
+        from datetime import datetime, timezone
         cluster.total_cpu_cores = total_cpu_cores
         cluster.total_memory_mb = total_memory_mb
-        cluster.last_sync = datetime.utcnow()
+        cluster.last_sync = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(cluster)
@@ -437,7 +437,7 @@ async def sync_cluster_vms(
                         cpu_sockets=1,
                         memory_mb=(vm_data.get("maxmem", 0) or 0) // (1024 * 1024),
                         status=portal_status,
-                        provisioned_at=datetime.utcnow(),
+                        provisioned_at=datetime.now(timezone.utc),
                     )
                     db.add(vm)
                     added += 1

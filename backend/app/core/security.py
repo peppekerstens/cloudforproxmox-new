@@ -57,9 +57,9 @@ def create_access_token(
         Encoded JWT token
     """
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(
+        expire = datetime.now(timezone.utc) + timedelta(
             minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
         )
 
@@ -95,9 +95,9 @@ def create_refresh_token(
         Encoded JWT refresh token
     """
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(
+        expire = datetime.now(timezone.utc) + timedelta(
             days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS
         )
 

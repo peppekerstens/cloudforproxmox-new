@@ -2,7 +2,7 @@
 Background tasks for VM provisioning and management.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from celery import Task
@@ -17,8 +17,8 @@ from app.models.iso_image import ISOImage
 from app.models.proxmox_cluster import ProxmoxCluster
 from app.models.vpc_network import VPCNetwork
 from app.models.vm_network_interface import VMNetworkInterface
+from app.models.resource_quota import ResourceQuota
 from app.services.proxmox_service import ProxmoxService
-from app.services.quota_service import QuotaService
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,10 @@ def provision_vm_with_disks(self, vm_id: str):
             )
             network = result.scalar_one_or_none()
             if network:
-                logger.info(f"VM {vm_id} will use network {network.name} (VLAN {network.vlan_id})")
+                logger.info(
+                    f"VM {vm_id} will use network {network.name} "
+                    f"(type={network.network_type}, vlan={network.vlan_id}, vni={network.vni})"
+                )
 
         try:
             # Step 1: Create base VM without disks
@@ -163,13 +166,21 @@ def provision_vm_with_disks(self, vm_id: str):
             }
 
             if network:
-                # Build VLAN-tagged network config
-                net0_config = proxmox.build_network_config(
-                    interface_name="net0",
-                    vlan_id=network.vlan_id,
-                    bridge=network.bridge,
-                    model="virtio"
-                )
+                if network.network_type == "vlan":
+                    net0_config = proxmox.build_network_config(
+                        interface_name="net0",
+                        vlan_id=network.vlan_id,
+                        bridge=network.bridge,
+                        model="virtio"
+                    )
+                else:
+                    # VXLAN / Simple: attach directly to the VNet bridge, no tag
+                    net0_config = proxmox.build_network_config(
+                        interface_name="net0",
+                        vlan_id=None,
+                        bridge=network.bridge,
+                        model="virtio"
+                    )
                 create_vm_kwargs["net0"] = net0_config
                 logger.info(f"Network config for VM {vm_id}: {net0_config}")
             # else: uses default "virtio,bridge=vmbr0" from create_vm_base
@@ -212,7 +223,7 @@ def provision_vm_with_disks(self, vm_id: str):
 
                                 cdrom_device = f"{disk.disk_interface}{disk.disk_number}"
                                 disk.status = "ready"
-                                disk.attached_at = datetime.utcnow()
+                                disk.attached_at = datetime.now(timezone.utc)
                                 disk.proxmox_disk_id = cdrom_device
 
                     else:
@@ -231,7 +242,7 @@ def provision_vm_with_disks(self, vm_id: str):
 
                         disk_id = f"{disk.disk_interface}{disk.disk_number}"
                         disk.status = "ready"
-                        disk.attached_at = datetime.utcnow()
+                        disk.attached_at = datetime.now(timezone.utc)
                         disk.proxmox_disk_id = disk_id
 
                         # Track boot disk
@@ -285,7 +296,7 @@ def provision_vm_with_disks(self, vm_id: str):
 
             # Step 5: Update VM status
             vm.status = "stopped"  # Ready but not started
-            vm.provisioned_at = datetime.utcnow()
+            vm.provisioned_at = datetime.now(timezone.utc)
             db.commit()
 
             logger.info(f"VM {vm_id} successfully provisioned on Proxmox")
@@ -312,28 +323,45 @@ def provision_vm_with_disks(self, vm_id: str):
     except Exception as e:
         logger.error(f"Error provisioning VM {vm_id}: {e}")
 
-        # Update VM status to error
+        # Determine whether quota needs releasing (only on first failure)
+        need_quota_release = vm.status != "error"
+
+        if need_quota_release:
+            try:
+                # Calculate total storage from disks
+                total_storage_gb = sum(disk.size_gb for disk in disks if not disk.is_cdrom)
+
+                # Update quota directly (sync — Celery tasks use sync sessions)
+                updates = {
+                    "cpu_cores": float(vm.cpu_cores),
+                    "memory_gb": vm.memory_mb / 1024,
+                    "storage_gb": float(total_storage_gb),
+                    "vm_count": 1.0,
+                }
+                for resource_type, amount in updates.items():
+                    if amount == 0:
+                        continue
+                    quota = db.execute(
+                        select(ResourceQuota).where(
+                            ResourceQuota.organization_id == vm.organization_id,
+                            ResourceQuota.resource_type == resource_type
+                        )
+                    ).scalar_one_or_none()
+                    if quota:
+                        quota.used_value = max(0, quota.used_value - amount)
+                        quota.last_calculated_at = datetime.now(timezone.utc)
+
+                db.commit()
+                logger.info(f"Released quota for failed VM {vm_id}")
+            except Exception as quota_error:
+                logger.error(f"Failed to release quota for VM {vm_id}: {quota_error}")
+
+        # Set VM status to error
         try:
             vm.status = "error"
             db.commit()
-        except:
-            pass
-
-        # Release quota on failure
-        try:
-            # Calculate total storage from disks
-            total_storage_gb = sum(disk.size_gb for disk in disks if not disk.is_cdrom)
-
-            quota_service = QuotaService(db)
-            quota_service.decrement_usage(
-                organization_id=vm.organization_id,
-                cpu_cores=vm.cpu_cores,
-                memory_gb=vm.memory_mb / 1024,
-                storage_gb=total_storage_gb,
-                vm_count=1
-            )
-            db.commit()
-            logger.info(f"Released quota for failed VM {vm_id}")
+        except Exception as status_error:
+            logger.error(f"Failed to set VM status to error for {vm_id}: {status_error}")
         except Exception as quota_error:
             logger.error(f"Failed to release quota for VM {vm_id}: {quota_error}")
 

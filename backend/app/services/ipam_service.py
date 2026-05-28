@@ -205,8 +205,8 @@ class IPAMService:
             )
 
         # Soft delete
-        from datetime import datetime
-        pool.deleted_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        pool.deleted_at = datetime.now(timezone.utc)
         await self.db.commit()
 
         logger.info(f"Deleted IP pool {pool_id}")

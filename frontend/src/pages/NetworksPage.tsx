@@ -15,6 +15,10 @@ interface Network {
   is_shared: boolean
   is_default: boolean
   created_at: string
+  network_type?: string
+  vni?: number
+  sdn_zone?: string
+  sdn_vnet?: string
 }
 
 interface CreateNetworkForm {
@@ -25,6 +29,7 @@ interface CreateNetworkForm {
   dns_servers: string
   is_shared: boolean
   bridge: string
+  network_type: string
 }
 
 export default function NetworksPage() {
@@ -39,7 +44,8 @@ export default function NetworksPage() {
     gateway: '',
     dns_servers: '',
     is_shared: false,
-    bridge: 'vmbr0'
+    bridge: 'vmbr0',
+    network_type: 'vlan'
   })
   const [creating, setCreating] = useState(false)
 
@@ -78,7 +84,8 @@ export default function NetworksPage() {
         gateway: formData.gateway || undefined,
         dns_servers: dnsServers.length > 0 ? dnsServers : undefined,
         is_shared: formData.is_shared,
-        bridge: formData.bridge
+        network_type: formData.network_type,
+        ...(formData.network_type === 'vlan' ? { bridge: formData.bridge } : {})
       })
 
       setShowCreateModal(false)
@@ -89,7 +96,8 @@ export default function NetworksPage() {
         gateway: '',
         dns_servers: '',
         is_shared: false,
-        bridge: 'vmbr0'
+        bridge: 'vmbr0',
+        network_type: 'vlan'
       })
       loadNetworks()
     } catch (error: any) {
@@ -185,11 +193,24 @@ export default function NetworksPage() {
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-500">VLAN ID:</span>
-                  <span className="font-mono bg-blue-50 text-blue-700 px-2 py-1 rounded">
-                    {network.vlan_id}
-                  </span>
+                  <span className="text-gray-500">Type:</span>
+                  <span className="font-mono text-gray-900">{network.network_type || 'vlan'}</span>
                 </div>
+                {(!network.network_type || network.network_type === 'vlan') ? (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-500">VLAN ID:</span>
+                    <span className="font-mono bg-blue-50 text-blue-700 px-2 py-1 rounded">
+                      {network.vlan_id}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-500">VNI:</span>
+                    <span className="font-mono bg-blue-50 text-blue-700 px-2 py-1 rounded">
+                      {network.vni || 'Auto'}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-gray-500">CIDR:</span>
                   <span className="font-mono text-gray-900">{network.cidr}</span>
@@ -204,6 +225,12 @@ export default function NetworksPage() {
                   <span className="text-gray-500">Bridge:</span>
                   <span className="font-mono text-gray-900">{network.bridge}</span>
                 </div>
+                {network.sdn_vnet && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-500">SDN VNet:</span>
+                    <span className="font-mono text-gray-900">{network.sdn_vnet}</span>
+                  </div>
+                )}
                 {network.is_shared && (
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-gray-500">Shared:</span>
@@ -246,6 +273,21 @@ export default function NetworksPage() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="Production Network"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Network Type
+                  </label>
+                  <select
+                    value={formData.network_type}
+                    onChange={(e) => setFormData({ ...formData, network_type: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="vlan">VLAN (802.1Q tagging)</option>
+                    <option value="vxlan">VXLAN (Overlay tunnel via SDN)</option>
+                    <option value="simple">Simple (Isolated bridge via SDN)</option>
+                  </select>
                 </div>
 
                 <div>
@@ -305,18 +347,27 @@ export default function NetworksPage() {
                   <p className="text-xs text-gray-500 mt-1">Comma-separated list</p>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Proxmox Bridge
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.bridge}
-                    onChange={(e) => setFormData({ ...formData, bridge: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="vmbr0"
-                  />
-                </div>
+                {formData.network_type === 'vlan' ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Proxmox Bridge
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.bridge}
+                      onChange={(e) => setFormData({ ...formData, bridge: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="vmbr0"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Proxmox Bridge
+                    </label>
+                    <p className="text-xs text-gray-500">Bridge is created automatically by SDN</p>
+                  </div>
+                )}
 
                 <div className="flex items-center">
                   <input

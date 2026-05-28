@@ -109,7 +109,7 @@ async def register(
         user_id=user.id,
         organization_id=default_org.id,
         role="admin",
-        joined_at=datetime.utcnow(),
+        joined_at=datetime.now(timezone.utc),
     )
     db.add(membership)
     await db.commit()
@@ -157,7 +157,7 @@ async def login(
         )
 
     # Update last login
-    user.last_login = datetime.utcnow()
+    user.last_login = datetime.now(timezone.utc)
     await db.commit()
 
     # Create tokens

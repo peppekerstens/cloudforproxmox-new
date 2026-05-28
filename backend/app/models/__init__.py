@@ -14,6 +14,7 @@ from app.models.storage_pool import StoragePool
 # Phase 3: VPC Networking
 from app.models.vpc_network import VPCNetwork
 from app.models.vlan_pool import VLANPool
+from app.models.vxlan_vni_pool import VXLANVNIPool
 from app.models.vm_network_interface import VMNetworkInterface
 from app.models.network_ip_pool import NetworkIPPool
 from app.models.network_ip_allocation import NetworkIPAllocation
@@ -32,6 +33,7 @@ __all__ = [
     # Phase 3: VPC Networking
     "VPCNetwork",
     "VLANPool",
+    "VXLANVNIPool",
     "VMNetworkInterface",
     "NetworkIPPool",
     "NetworkIPAllocation",

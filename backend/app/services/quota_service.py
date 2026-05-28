@@ -3,7 +3,7 @@ Quota management and enforcement service.
 """
 from dataclasses import dataclass
 from typing import Dict, List
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -198,7 +198,7 @@ class QuotaService:
             )
 
             quota.used_value += amount
-            quota.last_calculated_at = datetime.utcnow()
+            quota.last_calculated_at = datetime.now(timezone.utc)
 
         await self.db.commit()
 
@@ -244,7 +244,7 @@ class QuotaService:
 
             # Ensure usage doesn't go negative
             quota.used_value = max(0, quota.used_value - amount)
-            quota.last_calculated_at = datetime.utcnow()
+            quota.last_calculated_at = datetime.now(timezone.utc)
 
         await self.db.commit()
 
@@ -350,7 +350,7 @@ class QuotaService:
             resource_type=resource_type
         )
         quota.used_value = used_value
-        quota.last_calculated_at = datetime.utcnow()
+        quota.last_calculated_at = datetime.now(timezone.utc)
 
     async def get_all_quotas(self, organization_id: str) -> List[ResourceQuota]:
         """

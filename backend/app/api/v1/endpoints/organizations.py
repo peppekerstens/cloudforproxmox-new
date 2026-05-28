@@ -248,6 +248,6 @@ async def remove_member(
             )
 
     # Soft delete
-    from datetime import datetime
-    membership.deleted_at = datetime.utcnow()
+    from datetime import datetime, timezone
+    membership.deleted_at = datetime.now(timezone.utc)
     await db.commit()

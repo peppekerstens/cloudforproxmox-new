@@ -5,7 +5,7 @@ import logging
 import hashlib
 import requests
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from celery import Task
@@ -163,7 +163,7 @@ def transfer_iso_to_proxmox(self, iso_id: str):
             iso.proxmox_volid = f"{iso_storage}:iso/{iso.filename}"
             iso.upload_status = "ready"
             iso.upload_progress = 100.0
-            iso.synced_to_proxmox_at = datetime.utcnow()
+            iso.synced_to_proxmox_at = datetime.now(timezone.utc)
             iso.error_message = None
 
             db.commit()
@@ -349,8 +349,8 @@ def download_iso_from_url(self, iso_id: str):
                         iso.upload_status = "ready"
                         iso.download_status = "downloaded"
                         iso.upload_progress = 100.0
-                        iso.synced_to_proxmox_at = datetime.utcnow()
-                        iso.uploaded_at = datetime.utcnow()
+                        iso.synced_to_proxmox_at = datetime.now(timezone.utc)
+                        iso.uploaded_at = datetime.now(timezone.utc)
                         iso.error_message = None
 
                         db.commit()

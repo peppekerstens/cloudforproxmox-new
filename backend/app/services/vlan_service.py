@@ -1,6 +1,6 @@
 """VLAN pool management service for network isolation."""
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
@@ -124,7 +124,7 @@ class VLANService:
         # Mark as allocated
         vlan_entry.status = "allocated"
         vlan_entry.allocated_to_network_id = network_id
-        vlan_entry.allocated_at = datetime.utcnow()
+        vlan_entry.allocated_at = datetime.now(timezone.utc)
 
         await self.db.commit()
         await self.db.refresh(vlan_entry)

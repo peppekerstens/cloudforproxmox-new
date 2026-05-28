@@ -1,7 +1,7 @@
 """
 Health check endpoints for monitoring.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +25,7 @@ async def health_check() -> dict:
         "status": "healthy",
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
@@ -60,5 +60,5 @@ async def detailed_health_check(
             "database": db_status,
             "redis": redis_status,
         },
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }

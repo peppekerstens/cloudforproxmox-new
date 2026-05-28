@@ -176,8 +176,8 @@ async def attach_disk_to_vm(
         )
 
         disk.status = "ready"
-        from datetime import datetime
-        disk.attached_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        disk.attached_at = datetime.now(timezone.utc)
         disk.proxmox_disk_id = f"{disk.disk_interface}{disk.disk_number}"
         await db.commit()
         await db.refresh(disk)
@@ -285,8 +285,8 @@ async def detach_disk_from_vm(
         logger.warning(f"Failed to detach disk from Proxmox for disk {disk.id}: {e}")
 
     # Soft delete the disk record
-    from datetime import datetime
-    disk.deleted_at = datetime.utcnow()
+    from datetime import datetime, timezone
+    disk.deleted_at = datetime.now(timezone.utc)
     await db.commit()
 
     # Release quota
@@ -414,8 +414,8 @@ async def attach_iso_to_vm(
         )
 
         disk.status = "ready"
-        from datetime import datetime
-        disk.attached_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        disk.attached_at = datetime.now(timezone.utc)
         disk.proxmox_disk_id = "ide2"
         await db.commit()
         await db.refresh(disk)

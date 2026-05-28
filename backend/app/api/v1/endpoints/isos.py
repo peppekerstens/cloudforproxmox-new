@@ -436,8 +436,8 @@ async def delete_iso(
         )
 
     # Soft delete
-    from datetime import datetime
-    iso.deleted_at = datetime.utcnow()
+    from datetime import datetime, timezone
+    iso.deleted_at = datetime.now(timezone.utc)
 
     # TODO: Queue background task to clean up ISO from Proxmox and local storage
     # from app.tasks.iso_tasks import cleanup_iso_storage

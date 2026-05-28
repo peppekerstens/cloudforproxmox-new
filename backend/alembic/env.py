@@ -13,6 +13,8 @@ from app.models.organization_member import OrganizationMember
 from app.models.resource_quota import ResourceQuota
 from app.models.virtual_machine import VirtualMachine
 from app.models.proxmox_cluster import ProxmoxCluster
+from app.models.vpc_network import VPCNetwork
+from app.models.vxlan_vni_pool import VXLANVNIPool
 from app.core.config import settings
 
 # this is the Alembic Config object

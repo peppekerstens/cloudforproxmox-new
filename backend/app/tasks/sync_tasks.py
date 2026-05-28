@@ -3,7 +3,7 @@ Background tasks for synchronizing data from Proxmox clusters.
 """
 import logging
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from celery import Task
 from sqlalchemy import select
@@ -158,7 +158,7 @@ def sync_storage_pools_for_cluster(cluster_id: str) -> dict:
                     storage_pool.available_bytes = storage_status.get('avail')
                     storage_pool.is_active = storage_info.get('enabled', True)
                     storage_pool.is_shared = storage_info.get('shared', False)
-                    storage_pool.last_synced_at = datetime.utcnow()
+                    storage_pool.last_synced_at = datetime.now(timezone.utc)
                     updated += 1
                 else:
                     # Create new pool
@@ -172,7 +172,7 @@ def sync_storage_pools_for_cluster(cluster_id: str) -> dict:
                         available_bytes=storage_status.get('avail'),
                         is_active=storage_info.get('enabled', True),
                         is_shared=storage_info.get('shared', False),
-                        last_synced_at=datetime.utcnow()
+                        last_synced_at=datetime.now(timezone.utc)
                     )
                     db.add(storage_pool)
                     added += 1

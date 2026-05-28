@@ -13,12 +13,19 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from app.core.config import settings
 
 # Create async engine
+_is_sqlite = "sqlite" in str(settings.DATABASE_URL)
+
+engine_kwargs = {
+    "echo": settings.DATABASE_ECHO,
+    "pool_pre_ping": True,
+}
+if not _is_sqlite:
+    engine_kwargs["pool_size"] = settings.DATABASE_POOL_SIZE
+    engine_kwargs["max_overflow"] = settings.DATABASE_MAX_OVERFLOW
+
 engine = create_async_engine(
     str(settings.DATABASE_URL),
-    echo=settings.DATABASE_ECHO,
-    pool_size=settings.DATABASE_POOL_SIZE,
-    max_overflow=settings.DATABASE_MAX_OVERFLOW,
-    pool_pre_ping=True,  # Verify connections before using
+    **engine_kwargs,
 )
 
 # Create async session factory
@@ -32,12 +39,13 @@ AsyncSessionLocal = async_sessionmaker(
 
 # Create sync engine for Celery tasks (convert asyncpg URL to psycopg2)
 sync_database_url = str(settings.DATABASE_URL).replace('+asyncpg', '').replace('postgresql+', 'postgresql://')
+sync_engine_kwargs = {"echo": settings.DATABASE_ECHO, "pool_pre_ping": True}
+if not _is_sqlite:
+    sync_engine_kwargs["pool_size"] = settings.DATABASE_POOL_SIZE
+    sync_engine_kwargs["max_overflow"] = settings.DATABASE_MAX_OVERFLOW
 sync_engine = create_engine(
     sync_database_url,
-    echo=settings.DATABASE_ECHO,
-    pool_size=settings.DATABASE_POOL_SIZE,
-    max_overflow=settings.DATABASE_MAX_OVERFLOW,
-    pool_pre_ping=True,
+    **sync_engine_kwargs,
 )
 
 # Create sync session factory for Celery tasks

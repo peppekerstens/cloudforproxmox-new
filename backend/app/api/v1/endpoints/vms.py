@@ -2,7 +2,7 @@
 Virtual Machine management endpoints.
 """
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Response
@@ -522,20 +522,48 @@ async def delete_vm(
     memory_gb = vm.memory_mb / 1024
 
     # Delete from Proxmox
+    proxmox_delete_error = None
     try:
         proxmox_service = ProxmoxService(vm.proxmox_cluster)
         proxmox_service.delete_vm(vm.proxmox_node, vm.proxmox_vmid)
     except Exception as e:
-        # Log error but continue with soft delete
-        print(f"Failed to delete VM from Proxmox: {e}")
+        logger.error(f"Failed to delete VM {vm_id} (Proxmox VMID {vm.proxmox_vmid}) from Proxmox: {e}")
+        proxmox_delete_error = str(e)
 
     # Soft delete
-    vm.deleted_at = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+    vm.deleted_at = now
     await db.commit()
 
     # Soft delete disk records
     for disk in disks:
-        disk.deleted_at = datetime.utcnow()
+        disk.deleted_at = now
+
+    # Cascade soft-delete network interfaces
+    from app.models.vm_network_interface import VMNetworkInterface
+    result = await db.execute(
+        select(VMNetworkInterface).where(
+            VMNetworkInterface.vm_id == vm_id,
+            VMNetworkInterface.deleted_at.is_(None)
+        )
+    )
+    interfaces = list(result.scalars().all())
+    for interface in interfaces:
+        interface.deleted_at = now
+
+    # Cascade soft-delete IP allocations
+    from app.models.network_ip_allocation import NetworkIPAllocation
+    result = await db.execute(
+        select(NetworkIPAllocation).where(
+            NetworkIPAllocation.vm_id == vm_id,
+            NetworkIPAllocation.deleted_at.is_(None)
+        )
+    )
+    allocations = list(result.scalars().all())
+    for allocation in allocations:
+        allocation.deleted_at = now
+
+    await db.commit()
 
     # Release quota
     quota_service = QuotaService(db)
@@ -547,7 +575,16 @@ async def delete_vm(
         vm_count=1
     )
 
-    return None
+    # If Proxmox deletion failed, return 202 with warning
+    if proxmox_delete_error:
+        return {
+            "message": "VM deleted from database but Proxmox deletion failed. "
+                       "The VM may still be running on the cluster.",
+            "proxmox_vmid": vm.proxmox_vmid,
+            "error": proxmox_delete_error
+        }
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{vm_id}/start", status_code=status.HTTP_202_ACCEPTED)
@@ -589,7 +626,7 @@ async def start_vm(
         # Update status
         vm.status = "running"
         vm.power_state = "on"
-        vm.started_at = datetime.utcnow()
+        vm.started_at = datetime.now(timezone.utc)
         await db.commit()
 
         return {
@@ -643,7 +680,7 @@ async def stop_vm(
         # Update status
         vm.status = "stopped"
         vm.power_state = "off"
-        vm.stopped_at = datetime.utcnow()
+        vm.stopped_at = datetime.now(timezone.utc)
         await db.commit()
 
         return {
@@ -1389,7 +1426,7 @@ async def detach_network_from_vm(
         )
 
     # Soft delete interface
-    interface.deleted_at = datetime.utcnow()
+    interface.deleted_at = datetime.now(timezone.utc)
 
     await db.commit()
 
