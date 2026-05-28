@@ -123,9 +123,13 @@
 ## Execution Progress
 
 ### Phase 0-1: Setup → VM/LXC Foundation
-**Status:** Starting  
+**Status:** In Progress  
 **Target:** 179 commits, end at be13bb8  
 **Batches planned:** ~18-20
+
+| Batch | Commits | Status | Snapshot | Tests | Notes |
+|-------|---------|--------|----------|-------|-------|
+| Batch 1 | 7c1ae38...6b0034b (4) | ✅ Pass | snapshot-6b0034b | API health, DB, logs | 6/8 containers (nginx/adguard not yet in compose) |
 
 ### Phase 2-3: Network → Onboarding
 **Status:** Pending  
