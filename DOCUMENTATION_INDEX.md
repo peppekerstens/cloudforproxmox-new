@@ -35,6 +35,15 @@
 - **REPLAY_SUMMARY.md** (7.8K) - High-level overview
 - **DEPLOYMENT_TRACKING.md** (TBD) - Maps vm103 state to fork branches (per-batch)
 
+### 🔌 Infrastructure Integration
+- **PROXMOX_CLUSTER_INTEGRATION.md** ⭐ (NEW - comprehensive guide)
+  - Complete cluster attachment procedure
+  - API token creation and security
+  - Testing and verification procedures
+  - Troubleshooting guide
+  - API endpoints documentation
+  - Integration checklist
+
 ### ⚙️ Operations & Safety
 - **INFRASTRUCTURE_SAFEGUARDS.md** (14K) - Snapshot rotation, batch testing, failure handling
 - **OPENCODE_RULES.md** (14K) - 40-rule handbook for this project
@@ -48,7 +57,8 @@
 | File | Type | Size | Purpose | Status |
 |------|------|------|---------|--------|
 | **TWO_REPO_WORKFLOW.md** ⭐ | Operations | TBD | Per-batch workflow (identify, branch, test, tag, track) | ✅ NEW |
-| **UPSTREAM_DEPLOYMENT_PREREQUISITES.md** ⭐ | Operations | 13K | Complete phase 0 guide: deployment, issues, solutions, config changes | ✅ DONE |
+| **UPSTREAM_DEPLOYMENT_PREREQUISITES.md** ⭐ | Operations | 13K | Complete phase 0 guide: deployment, issues, solutions, config changes, Proxmox integration | ✅ DONE |
+| **PROXMOX_CLUSTER_INTEGRATION.md** ⭐ | Infrastructure | TBD | Cluster attachment guide: API token, registration, testing, troubleshooting | ✅ NEW |
 | **FORK_STRATEGY.md** ⭐ | Planning | 8.5K | Why fork was chosen (Option 2 selected) | ✅ DECIDED |
 | **REPLAY_STATUS.md** | Tracking | 6.5K | Current status, phases, deliverables, gate criteria | ✅ CURRENT |
 | REPLAY_PLAN_PHASE0-1.md | Planning | 96K | 179 commits for Setup & Foundation phase | 📍 REFERENCE |
@@ -145,10 +155,11 @@
 5. **INFRASTRUCTURE_SAFEGUARDS.md** - Snapshot procedures, rollback process
 
 ### For DevOps (Operations)
-1. **INFRASTRUCTURE_SAFEGUARDS.md** - Snapshot rotation, disaster recovery
-2. **UPSTREAM_DEPLOYMENT_PREREQUISITES.md** - Troubleshooting reference
-3. **OPENCODE_RULES.md** - Operational guidelines
-4. **REPLAY_STATUS.md** - Current deployments, snapshots
+1. **UPSTREAM_DEPLOYMENT_PREREQUISITES.md** - Phase 0 complete guide, troubleshooting
+2. **PROXMOX_CLUSTER_INTEGRATION.md** - Cluster attachment and management
+3. **INFRASTRUCTURE_SAFEGUARDS.md** - Snapshot rotation, disaster recovery
+4. **OPENCODE_RULES.md** - Operational guidelines
+5. **REPLAY_STATUS.md** - Current deployments, snapshots
 
 ### For Security Review
 1. **PHASE12_SECURITY_CHECKPOINT.md** - Pre-HTTPS audit checklist
