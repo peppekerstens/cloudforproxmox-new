@@ -67,7 +67,7 @@
 - ✅ All 8 containers healthy (postgres, redis, rabbitmq, api, frontend, celery-worker, celery-beat, flower)
 - ✅ API responding (`/api/v1/health/detailed` → healthy)
 - ✅ Frontend accessible (http://192.168.2.186:3000)
-- ✅ Login verified (admin@example.org → dashboard)
+- ✅ Login verified (test credentials → dashboard)
 - ✅ Configuration documented: VITE_API_URL, CORS_ORIGINS
 - ✅ Snapshot: `snapshot-upstream-final-cors-fixed` (baseline for Phase 1)
 - ✅ Documentation: UPSTREAM_DEPLOYMENT_PREREQUISITES.md, FORK_STRATEGY.md
@@ -262,7 +262,7 @@
   - cloudplatform-celery-beat (running)
   - cloudplatform-flower (running)
 - **API Health:** ✅ `GET /api/v1/health` → `{"status":"healthy","version":"1.0.0"}`
-- **Login Test:** ✅ `POST /api/v1/auth/login` (admin@example.org/superadmin) → Access token issued
+- **Login Test:** ✅ `POST /api/v1/auth/login` (test credentials) → Access token issued
   - access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
   - refresh_token: issued
   - expires_in: 900s
@@ -383,7 +383,8 @@ docker-compose down && docker-compose up -d --build
 curl -X GET http://192.168.2.186:8000/api/v1/health
 curl -X POST http://192.168.2.186:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.org","password":"superadmin"}'
+  -d '{"email":"<TEST_USER_EMAIL>","password":"<TEST_USER_PASSWORD>"}'
+# See CREDENTIALS_MANAGEMENT.md for test credentials
 # Test new endpoints...
 
 # 5. Create snapshot:

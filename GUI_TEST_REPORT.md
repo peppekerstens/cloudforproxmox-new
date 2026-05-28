@@ -8,9 +8,10 @@
 
 ## Test Scenario
 
-**User:** admin@example.org  
-**Password:** superadmin  
+**User:** [See CREDENTIALS_MANAGEMENT.md for test credentials]  
 **Expected:** Login succeeds → Dashboard loads → Account info displays
+
+⚠️ **NOTE:** Test credentials are environment-specific and managed via .env file. See CREDENTIALS_MANAGEMENT.md for secure credential handling.
 
 ---
 
@@ -31,9 +32,7 @@
   - ✅ "Sign in" button
 
 ### 3. Login Submission ✅
-- **Credentials Entered:**
-  - Email: admin@example.org
-  - Password: superadmin
+- **Credentials Entered:** [See CREDENTIALS_MANAGEMENT.md]
 - **Button Clicked:** "Sign in"
 - **Response Time:** ~5 seconds
 - **Result:** ✅ Login successful
