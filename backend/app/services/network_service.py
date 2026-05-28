@@ -1,4 +1,4 @@
-"""Network management service for VPC networking (VLAN / VXLAN / Simple SDN)."""
+"""Network management service for VPC networking with VLAN isolation."""
 from typing import Optional, List
 import ipaddress
 import logging
@@ -6,13 +6,9 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.vpc_network import VPCNetwork
-from app.models.proxmox_cluster import ProxmoxCluster
 from app.models.network_ip_pool import NetworkIPPool
 from app.models.network_ip_allocation import NetworkIPAllocation
 from app.services.vlan_service import VLANService
-from app.services.vni_service import VNIService
-from app.services.sdn_service import SDNService
-from app.services.proxmox_service import ProxmoxService
 from app.services.quota_service import QuotaService
 from app.schemas.network import NetworkCreate, NetworkUpdate
 
@@ -20,37 +16,17 @@ logger = logging.getLogger(__name__)
 
 
 class NetworkService:
-    """Service for managing VPC networks with configurable isolation type.
+    """Service for managing VPC networks with VLAN allocation."""
 
-    Supports three network types:
-    - **vlan** (default):  802.1Q VLAN tagging on a Proxmox bridge.
-                           Allocates VLAN ID from pool.
-    - **vxlan**:           VXLAN overlay tunnel via Proxmox SDN.
-                           Allocates VNI from pool, creates SDN VNet.
-    - **simple**:          Isolated per-node bridge via Proxmox SDN.
-                           Allocates VNI from pool, creates SDN VNet.
-    """
+    def __init__(self, db: AsyncSession):
+        """Initialize network service.
 
-    def __init__(self, db: AsyncSession,
-                 proxmox: Optional[ProxmoxService] = None):
+        Args:
+            db: Database session
+        """
         self.db = db
         self.vlan_service = VLANService(db)
-        self.vni_service = VNIService(db)
         self.quota_service = QuotaService(db)
-        self._proxmox = proxmox
-        self._sdn_service: Optional[SDNService] = None
-
-    def _get_sdn_service(self) -> SDNService:
-        """Lazily initialise the SDN service from the first active cluster."""
-        if self._sdn_service is not None:
-            return self._sdn_service
-        if self._proxmox is None:
-            raise RuntimeError(
-                "ProxmoxService is required for SDN operations. "
-                "Pass proxmox= to NetworkService constructor."
-            )
-        self._sdn_service = SDNService(self._proxmox)
-        return self._sdn_service
 
     async def create_network(
         self,
@@ -58,15 +34,7 @@ class NetworkService:
         created_by: str,
         network_data: NetworkCreate
     ) -> VPCNetwork:
-        """Create VPC network.
-
-        Behaviour depends on ``network_data.network_type``:
-
-        - **vlan**:    Allocates a VLAN ID, uses existing bridge + tag.
-        - **vxlan**:   Allocates a VNI, creates SDN zone + VNet.
-                       Requires a Proxmox cluster to be registered.
-        - **simple**:  Allocates a VNI, creates SDN zone + VNet.
-                       Requires a Proxmox cluster to be registered.
+        """Create VPC network with VLAN allocation.
 
         Args:
             organization_id: Organization ID
@@ -78,10 +46,19 @@ class NetworkService:
 
         Raises:
             ValueError: If quota exceeded or CIDR invalid
-            RuntimeError: If VLAN/VNI allocation or SDN creation fails
-        """
-        network_type = network_data.network_type or "vlan"
+            RuntimeError: If VLAN allocation fails
 
+        Example:
+            >>> network = await network_service.create_network(
+            ...     organization_id="org-123",
+            ...     created_by="user-456",
+            ...     network_data=NetworkCreate(
+            ...         name="Production",
+            ...         cidr="10.100.0.0/24",
+            ...         gateway="10.100.0.1"
+            ...     )
+            ... )
+        """
         # 1. Validate CIDR notation
         try:
             ip_network = ipaddress.ip_network(network_data.cidr, strict=False)
@@ -99,91 +76,41 @@ class NetworkService:
                 f"Network quota exceeded. {', '.join(quota_check.exceeded_resources)}"
             )
 
-        # 3. Allocate resource (VLAN or VNI)
-        vlan_id = None
-        vni = None
-
-        if network_type == "vlan":
-            vlan_id = await self.vlan_service.allocate_vlan(None)
-            logger.info(f"Allocated VLAN {vlan_id} for network creation")
-        else:
-            vni = await self.vni_service.allocate_vni(None)
-            logger.info(f"Allocated VNI {vni} for {network_type} network creation")
-
-        # 4. SDN zone + VNet creation (for vxlan / simple)
-        sdn_zone = None
-        sdn_vnet = None
-        effective_bridge = network_data.bridge
-
-        if network_type in ("vxlan", "simple"):
-            sdn_svc = self._get_sdn_service()
-            try:
-                vnet_result = sdn_svc.create_vnet(
-                    network_id="pending",  # placeholder — will update after flush
-                    network_type=network_type,
-                    vlan_id=vlan_id,
-                    vni=vni,
-                )
-                sdn_zone = vnet_result["sdn_zone"]
-                sdn_vnet = vnet_result["sdn_vnet"]
-                effective_bridge = vnet_result["bridge"]
-            except Exception:
-                logger.error(f"SDN setup failed, releasing resource")
-                if vni is not None:
-                    await self.vni_service.release_vni(vni)
-                raise
+        # 3. Allocate VLAN (with None for network_id since network doesn't exist yet)
+        vlan_id = await self.vlan_service.allocate_vlan(None)
+        logger.info(f"Allocated VLAN {vlan_id} for network creation")
 
         try:
-            # 5. Auto-generate gateway if not provided
+            # 4. Auto-generate gateway if not provided (use first usable IP)
             gateway = network_data.gateway
             if not gateway and ip_network.num_addresses > 2:
+                # For /24: 10.100.0.1 (skip network address 10.100.0.0)
                 gateway = str(list(ip_network.hosts())[0])
+                logger.debug(f"Auto-generated gateway: {gateway}")
 
-            # 6. Create network record
+            # 5. Create network record
             network = VPCNetwork(
                 organization_id=organization_id,
                 created_by=created_by,
                 name=network_data.name,
                 description=network_data.description,
-                network_type=network_type,
-                vlan_id=vlan_id or 0,  # non-nullable; 0 means "not used"
-                bridge=effective_bridge,
-                vni=vni,
-                sdn_zone=sdn_zone,
-                sdn_vnet=sdn_vnet,
+                vlan_id=vlan_id,
+                bridge=network_data.bridge,
                 cidr=network_data.cidr,
                 gateway=gateway,
                 dns_servers=network_data.dns_servers,
                 is_shared=network_data.is_shared,
-                is_default=False,
-                tags={},
+                is_default=False,  # Must be explicitly set via separate endpoint
+                tags={}
             )
 
             self.db.add(network)
-            await self.db.flush()
+            await self.db.flush()  # Get network.id
 
-            # 7. Update pool allocations with network ID
-            if network_type == "vlan":
-                await self.vlan_service.update_allocation(vlan_id, network.id)
-            else:
-                await self.vni_service.update_allocation(vni, network.id)
+            # 6. Update VLAN allocation with network ID
+            await self.vlan_service.update_allocation(vlan_id, network.id)
 
-                # Update the SDN VNet name to use real network ID
-                try:
-                    sdn_svc = self._get_sdn_service()
-                    sdn_svc.delete_vnet("pending")  # remove placeholder VNet
-                    vnet_result = sdn_svc.create_vnet(
-                        network_id=network.id,
-                        network_type=network_type,
-                        vlan_id=vlan_id,
-                        vni=vni,
-                    )
-                    network.sdn_vnet = vnet_result["sdn_vnet"]
-                    network.bridge = vnet_result["bridge"]
-                except Exception as e:
-                    logger.warning(f"Could not update SDN VNet name: {e}")
-
-            # 8. Increment quota usage
+            # 7. Increment quota usage
             await self.quota_service.increment_usage(
                 organization_id=organization_id,
                 network_segments=1
@@ -193,24 +120,16 @@ class NetworkService:
             await self.db.refresh(network)
 
             logger.info(
-                f"Created {network_type} network {network.id} ({network.name}) "
-                f"for org {organization_id}"
+                f"Created network {network.id} ({network.name}) "
+                f"with VLAN {vlan_id} for org {organization_id}"
             )
 
             return network
 
         except Exception as e:
-            logger.error(f"Network creation failed, releasing resources: {e}")
-            if network_type == "vlan":
-                await self.vlan_service.release_vlan(vlan_id)
-            else:
-                await self.vni_service.release_vni(vni)
-                if sdn_vnet:
-                    try:
-                        sdn_svc = self._get_sdn_service()
-                        sdn_svc.delete_vnet(sdn_vnet)
-                    except Exception:
-                        pass
+            # Rollback VLAN allocation on failure
+            logger.error(f"Network creation failed, releasing VLAN {vlan_id}: {e}")
+            await self.vlan_service.release_vlan(vlan_id)
             raise
 
     async def get_network(
@@ -383,23 +302,8 @@ class NetworkService:
         from datetime import datetime
         network.deleted_at = datetime.utcnow()
 
-        # Release resource back to pool (VLAN or VNI)
-        if network.network_type == "vlan":
-            await self.vlan_service.release_vlan(network.vlan_id)
-        else:
-            if network.vni is not None:
-                await self.vni_service.release_vni(network.vni)
-
-        # Delete SDN VNet (for vxlan / simple)
-        if network.network_type in ("vxlan", "simple") and network.sdn_vnet:
-            try:
-                if self._proxmox is not None:
-                    sdn_svc = self._get_sdn_service()
-                    sdn_svc.delete_vnet(network.id)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to delete SDN VNet for network {network_id}: {e}"
-                )
+        # Release VLAN back to pool
+        await self.vlan_service.release_vlan(network.vlan_id)
 
         # Decrement quota
         await self.quota_service.decrement_usage(
@@ -410,8 +314,7 @@ class NetworkService:
         await self.db.commit()
 
         logger.info(
-            f"Deleted {network.network_type} network {network_id} "
-            f"(released VLAN {network.vlan_id} / VNI {network.vni})"
+            f"Deleted network {network_id} and released VLAN {network.vlan_id}"
         )
         return True
 
@@ -557,9 +460,7 @@ class NetworkService:
 
         return {
             "network_id": network.id,
-            "network_type": network.network_type,
             "vlan_id": network.vlan_id,
-            "vni": network.vni,
             "cidr": network.cidr,
             "total_ips": total_ips,
             "allocated_ips": ip_allocation_count,

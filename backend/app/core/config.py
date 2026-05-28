@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
 
     # Application
-    APP_NAME: str = "Proxmox ISP API"
+    APP_NAME: str = "Cloud Platform API"
     APP_VERSION: str = "1.0.0"
     API_V1_PREFIX: str = "/api/v1"
     ENVIRONMENT: str = Field(default="development", pattern="^(development|staging|production)$")
@@ -58,9 +58,9 @@ class Settings(BaseSettings):
     PROXMOX_TOKEN_VALUE: Optional[str] = None
     PROXMOX_VERIFY_SSL: bool = Field(default=True)
 
-    # Celery (Task Queue) — Redis is both broker and result backend
-    CELERY_BROKER_URL: str = Field(default="redis://localhost:6379/1")
-    CELERY_RESULT_BACKEND: str = Field(default="redis://localhost:6379/2")
+    # Celery (Task Queue)
+    CELERY_BROKER_URL: str = Field(default="amqp://guest:guest@localhost:5672//")
+    CELERY_RESULT_BACKEND: str = Field(default="redis://localhost:6379/1")
 
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=10)

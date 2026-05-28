@@ -10,10 +10,6 @@ class NetworkCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255, description="Network name")
     description: Optional[str] = Field(None, description="Network description")
-    network_type: str = Field(
-        default="vlan",
-        description="Network isolation type: vlan, vxlan, or simple"
-    )
     cidr: str = Field(..., description="CIDR notation (e.g., 10.100.0.0/24)")
     gateway: Optional[str] = Field(None, description="Gateway IP address")
     dns_servers: Optional[List[str]] = Field(default_factory=list, description="DNS servers")
@@ -42,21 +38,11 @@ class NetworkCreate(BaseModel):
             raise ValueError(f"Invalid gateway IP address: {e}")
         return v
 
-    @field_validator('network_type')
-    @classmethod
-    def validate_network_type(cls, v: str) -> str:
-        """Validate network type."""
-        allowed = ['vlan', 'vxlan', 'simple']
-        if v.lower() not in allowed:
-            raise ValueError(f"network_type must be one of: {', '.join(allowed)}")
-        return v.lower()
-
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "name": "Production Network",
                 "description": "Primary production network for web services",
-                "network_type": "vlan",
                 "cidr": "10.100.0.0/24",
                 "gateway": "10.100.0.1",
                 "dns_servers": ["8.8.8.8", "8.8.4.4"],
@@ -97,12 +83,8 @@ class NetworkResponse(BaseModel):
     created_by: str
     name: str
     description: Optional[str]
-    network_type: str
     vlan_id: int
     bridge: str
-    vni: Optional[int]
-    sdn_zone: Optional[str]
-    sdn_vnet: Optional[str]
     cidr: str
     gateway: Optional[str]
     dns_servers: Optional[List[str]]

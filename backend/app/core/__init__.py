@@ -1,3 +1,3 @@
-from app.core.config import settings
-
-__all__ = ["settings"]
+"""
+Core package containing configuration, security, dependencies, and RBAC.
+"""

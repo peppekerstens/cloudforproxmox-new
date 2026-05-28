@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for startup and shutdown events.
     """
     # Startup
-    print("🚀 Starting Proxmox ISP API...")
+    print("🚀 Starting Cloud Platform API...")
     print(f"Environment: {settings.ENVIRONMENT}")
     print(f"Version: {settings.APP_VERSION}")
 
@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    print("👋 Shutting down Proxmox ISP API...")
+    print("👋 Shutting down Cloud Platform API...")
     await close_db()
 
 
@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="Proxmox ISP — self-service ISP portal on Proxmox VE",
+    description="A comprehensive cloud management platform built on top of Proxmox VE",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",

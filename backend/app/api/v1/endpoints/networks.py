@@ -3,14 +3,12 @@ from typing import Optional, List
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
 from app.models.user import User
-from app.models.proxmox_cluster import ProxmoxCluster
 from app.schemas.network import (
     NetworkCreate,
     NetworkUpdate,
@@ -24,21 +22,9 @@ from app.schemas.network import (
 from app.core.deps import get_current_user, get_organization_context, OrgContext, RequirePermission
 from app.core.rbac import Permission
 from app.services.network_service import NetworkService
-from app.services.proxmox_service import ProxmoxService
 from app.services.ipam_service import IPAMService
 
 router = APIRouter(prefix="/networks", tags=["VPC Networks"])
-
-
-async def _get_proxmox_service(db: AsyncSession) -> Optional[ProxmoxService]:
-    """Get a ProxmoxService from the first active cluster, if any."""
-    result = await db.execute(
-        select(ProxmoxCluster).where(ProxmoxCluster.is_active == True).limit(1)
-    )
-    cluster = result.scalar_one_or_none()
-    if cluster:
-        return ProxmoxService(cluster=cluster)
-    return None
 
 
 @router.post("", response_model=NetworkResponse, status_code=status.HTTP_201_CREATED)
@@ -47,35 +33,14 @@ async def create_network(
     org_context: OrgContext = Depends(RequirePermission(Permission.NETWORK_CREATE)),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create VPC network.
+    """Create VPC network with VLAN allocation.
 
-    The ``network_type`` field determines the isolation mechanism:
-
-    - **vlan** (default):   802.1Q tagging on ``bridge``.
-                             VLAN ID auto-allocated from pool.
-    - **vxlan**:            VXLAN overlay tunnel via Proxmox SDN.
-                             Requires a registered cluster. VNI auto-allocated.
-    - **simple**:           Isolated per-node bridge via Proxmox SDN.
-                             Requires a registered cluster. VNI auto-allocated.
-
+    Automatically allocates VLAN from pool and checks quota limits.
     Gateway IP defaults to first usable IP in CIDR if not specified.
 
     **Required Permission**: network:create
     """
-    network_type = network_data.network_type or "vlan"
-
-    # Build ProxmoxService only if SDN networking is requested
-    proxmox_service = None
-    if network_type in ("vxlan", "simple"):
-        proxmox_service = await _get_proxmox_service(db)
-        if not proxmox_service:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Network type '{network_type}' requires a registered "
-                       "Proxmox cluster. Add a cluster first, or use network_type='vlan'."
-            )
-
-    network_service = NetworkService(db, proxmox=proxmox_service)
+    network_service = NetworkService(db)
 
     try:
         network = await network_service.create_network(
@@ -190,27 +155,13 @@ async def delete_network(
     org_context: OrgContext = Depends(RequirePermission(Permission.NETWORK_DELETE)),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete network and release VLAN/VNI.
+    """Delete network and release VLAN.
 
-    For SDN networks (vxlan, simple), also removes the SDN VNet.
     Fails if VMs are still attached to the network.
 
     **Required Permission**: network:delete
     """
-    # Pre-fetch the network to know if we need ProxmoxService
-    from app.models.vpc_network import VPCNetwork
-    from sqlalchemy import select, and_
-    result = await db.execute(
-        select(VPCNetwork).where(
-            and_(VPCNetwork.id == network_id, VPCNetwork.deleted_at.is_(None))
-        )
-    )
-    net = result.scalar_one_or_none()
-    proxmox_service = None
-    if net and net.network_type in ("vxlan", "simple"):
-        proxmox_service = await _get_proxmox_service(db)
-
-    network_service = NetworkService(db, proxmox=proxmox_service)
+    network_service = NetworkService(db)
 
     try:
         success = await network_service.delete_network(network_id, org_context.org_id)

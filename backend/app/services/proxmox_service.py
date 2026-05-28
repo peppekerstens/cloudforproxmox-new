@@ -140,19 +140,6 @@ class ProxmoxService:
             logger.error(f"Failed to get version: {e}")
             return {}
 
-    def get_cluster_status(self) -> List[Dict[str, Any]]:
-        """Get cluster status including node IPs.
-
-        Returns:
-            List of cluster member dicts (nodes have ``ip``, ``name``, ``online``).
-        """
-        try:
-            proxmox = self._get_connection()
-            return proxmox.cluster.status.get()
-        except Exception as e:
-            logger.error(f"Failed to get cluster status: {e}")
-            return []
-
     def select_best_node(self) -> Optional[str]:
         """
         Select the best node for VM placement based on available resources.
@@ -1136,116 +1123,6 @@ class ProxmoxService:
         except Exception as e:
             logger.error(f"Failed to resize VM {vmid}: {e}")
             raise
-
-    # ------------------------------------------------------------------ #
-    #  SDN (Software Defined Network) methods
-    # ------------------------------------------------------------------ #
-
-    def get_sdn_zones(self) -> List[Dict[str, Any]]:
-        """List all SDN zones on the cluster.
-
-        Returns:
-            List of zone dicts (each with ``zone``, ``type``, …)
-        """
-        try:
-            proxmox = self._get_connection()
-            return proxmox.cluster.sdn.zones.get()
-        except Exception as e:
-            logger.error(f"Failed to list SDN zones: {e}")
-            return []
-
-    def create_sdn_zone(self, zone: str, zone_type: str, **kwargs) -> Dict[str, Any]:
-        """Create an SDN zone.
-
-        Args:
-            zone: Zone name (e.g. ``isp-vxlan``)
-            zone_type: Zone type (``vlan``, ``vxlan``, ``simple``, …)
-            **kwargs: Additional zone parameters passed to the API
-
-        Returns:
-            API result
-
-        Raises:
-            RuntimeError: If zone creation fails
-        """
-        try:
-            proxmox = self._get_connection()
-            payload = {"zone": zone, "type": zone_type, **kwargs}
-            result = proxmox.cluster.sdn.zones.post(**payload)
-            logger.info(f"Created SDN zone {zone} (type={zone_type})")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to create SDN zone {zone}: {e}")
-            raise RuntimeError(f"Failed to create SDN zone {zone}: {e}") from e
-
-    def create_sdn_vnet(self, vnet_name: str, zone: str, **kwargs) -> Dict[str, Any]:
-        """Create an SDN VNet.
-
-        The VNet must belong to an existing zone. For VLAN zones you need
-        ``tag=<vlan_id>``; for VXLAN zones you need ``vni=<vni>``.
-
-        Args:
-            vnet_name: VNet name (max 12 chars — ``vn-{name}`` must be <= 15)
-            zone: Zone name
-            **kwargs: VNet parameters (tag, vni, …)
-
-        Returns:
-            API result
-
-        Raises:
-            RuntimeError: If VNet creation fails
-        """
-        try:
-            proxmox = self._get_connection()
-            payload = {"vnet": vnet_name, "zone": zone, **kwargs}
-            result = proxmox.cluster.sdn.vnets.post(**payload)
-            logger.info(f"Created SDN VNet {vnet_name} in zone {zone}")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to create SDN VNet {vnet_name}: {e}")
-            raise RuntimeError(f"Failed to create SDN VNet {vnet_name}: {e}") from e
-
-    def delete_sdn_vnet(self, vnet_name: str) -> Dict[str, Any]:
-        """Delete an SDN VNet.
-
-        Args:
-            vnet_name: VNet name to delete
-
-        Returns:
-            API result
-
-        Raises:
-            RuntimeError: If deletion fails
-        """
-        try:
-            proxmox = self._get_connection()
-            result = proxmox.cluster.sdn.vnets(vnet_name).delete()
-            logger.info(f"Deleted SDN VNet {vnet_name}")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to delete SDN VNet {vnet_name}: {e}")
-            raise RuntimeError(f"Failed to delete SDN VNet {vnet_name}: {e}") from e
-
-    def apply_sdn(self) -> Dict[str, Any]:
-        """Apply pending SDN configuration changes.
-
-        Must be called after creating / deleting zones or VNets.
-
-        Returns:
-            API result
-        """
-        try:
-            proxmox = self._get_connection()
-            result = proxmox.cluster.sdn.put()
-            logger.info("Applied SDN configuration")
-            return result
-        except Exception as e:
-            logger.warning(f"Failed to apply SDN configuration: {e}")
-            return {}
-
-    # ------------------------------------------------------------------ #
-    #  Network config helpers
-    # ------------------------------------------------------------------ #
 
     def build_network_config(
         self,

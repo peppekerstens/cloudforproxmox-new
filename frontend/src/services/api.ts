@@ -503,7 +503,6 @@ export const networksApi = {
     dns_servers?: string[]
     is_shared?: boolean
     bridge?: string
-    network_type?: string
   }) => {
     const response = await api.post('/networks', data)
     return response.data
