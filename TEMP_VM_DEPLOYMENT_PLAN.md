@@ -1,8 +1,10 @@
 # Temporary VM Deployment (vmid 151, pve1)
 
-**Status:** VM created, awaiting boot  
+**Status:** ✅ COMPLETE & VERIFIED  
 **Created:** 2026-05-28 22:15 UTC  
-**UPID:** UPID:pve1:00098D3D:009729B4:6A18AC0E:qmcreate:151:root@pam!mcp-server:
+**Deployed From:** cloudforproxmox-new/main branch (with all fixes)  
+**IP Address:** 192.168.2.196  
+**Final Snapshot:** phase-1-batch1-main-branch-working
 
 ---
 

@@ -1,12 +1,16 @@
-# Phase 1 Batch 1: Critical Fixes Applied
+# Phase 1 Batch 1: Critical Fixes Applied & Integrated
 
-**Status:** ✅ ALL FIXES COMMITTED  
+**Status:** ✅ ALL FIXES COMMITTED & MERGED INTO BOTH BRANCHES  
 **Date:** 2026-05-28  
-**Verified:** Login endpoint working, 8/8 containers healthy
+**Verified:** Login endpoint working, 8/8 containers healthy, tested on vm103 & vm151
+**Branch Status:** `main` and `phase-1-batch-1` both have all fixes applied
 
 ## Summary
 
-Batch 1 deployment (16 commits: db64b57..67efef0) required 4 critical fixes due to code quality issues in the source commits. All fixes have been committed to both the orchestration repo (cloudforproxmox) and the fork (cloudforproxmox-new).
+Batch 1 deployment (16 commits: db64b57..67efef0) required 4 critical fixes due to code quality issues in the source commits. All fixes have been:
+1. Committed to the orchestration repo (cloudforproxmox/main)
+2. Committed to the fork (cloudforproxmox-new/main)
+3. **Merged into `cloudforproxmox-new/phase-1-batch-1` branch** for complete working state
 
 ---
 

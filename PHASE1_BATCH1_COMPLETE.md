@@ -1,14 +1,19 @@
 # Phase 1 Batch 1: Complete Summary ✅
 
-**Status:** ✅ COMPLETE & VERIFIED  
+**Status:** ✅ COMPLETE & VERIFIED & PORTABLE  
 **Date:** 2026-05-28  
-**Duration:** ~4 hours (deployment + testing + security fixes)
+**Duration:** ~4 hours initial + 2 hours porting to VM 151  
+**Branch Status:** Both `cloudforproxmox-new/main` and `cloudforproxmox-new/phase-1-batch-1` ready for deployment
 
 ---
 
 ## Executive Summary
 
-Phase 1 Batch 1 (16 commits from proxmox-isp) successfully deployed to vm103, all endpoints verified working, 4 critical code issues fixed, security hardened, and comprehensive documentation created.
+Phase 1 Batch 1 (16 commits from proxmox-isp) successfully deployed to:
+- **vm103** (pve2, 192.168.2.186) - Initial deployment, verified working
+- **vm151** (pve1, 192.168.2.196) - Ported & verified working
+
+All endpoints verified working, 4 critical code issues fixed, security hardened, and deployment is now **portable across nodes**.
 
 ---
 

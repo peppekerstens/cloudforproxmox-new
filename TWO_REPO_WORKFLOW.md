@@ -2,7 +2,14 @@
 
 **Effective Date:** May 28, 2026  
 **Status:** ✅ DECIDED (Option 2: Fork Upstream)  
-**Scope:** Phase 1-12 replay (303 commits across 12 phases)
+**Scope:** Phase 1-12 replay (303 commits across 12 phases)  
+**Branch Status Update:** ✅ `phase-1-batch-1` branch now includes ALL FIXES (merged from main 2026-05-28)
+
+---
+
+## ⚠️ Important Update
+
+Both `cloudforproxmox-new/main` and `cloudforproxmox-new/phase-1-batch-1` branches now have **identical working code** with all critical fixes applied. Either branch can be used for Phase 1 Batch 1 deployment. See BATCH1_FIXES.md for details.
 
 ---
 

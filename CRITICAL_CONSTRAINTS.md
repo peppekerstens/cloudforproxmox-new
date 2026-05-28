@@ -77,7 +77,9 @@ proxmox_mcp_pve1_create_lxc(
 
 **REFERENCE:** TWO_REPO_WORKFLOW.md
 
-**CURRENT BRANCH:** `phase-1-batch-1` (16 commits applied, all fixes included)
+**AVAILABLE BRANCHES:** 
+- ✅ `phase-1-batch-1` (16 commits, all fixes merged in 2026-05-28)
+- ✅ `main` (master branch with all fixes, recommended)
 
 **CHECK BEFORE PROCEEDING:**
 ```
