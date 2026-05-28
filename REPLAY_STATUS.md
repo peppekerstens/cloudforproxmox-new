@@ -129,14 +129,26 @@
 
 ## Execution Progress
 
-### Phase 0-1: Setup → VM/LXC Foundation
-**Status:** In Progress  
+### Upstream Base: Working ✅
+**Status:** Deployed & Healthy  
+**Snapshot:** snapshot-upstream-working  
+**All 8 Containers:** Running & Healthy
+- postgres (timescaledb) - healthy
+- redis - healthy
+- rabbitmq - healthy
+- api (FastAPI) - running
+- frontend (React) - running
+- celery-worker - running
+- celery-beat - running
+- flower - running
+
+**VM Config:** 4 vCPU, 4GB RAM, 20GB disk (upgraded from 2 vCPU)
+
+### Phase 0-1: Setup → VM/LXC Foundation (Fork Commits)
+**Status:** Pending  
 **Target:** 179 commits, end at be13bb8  
 **Batches planned:** ~18-20
-
-| Batch | Commits | Status | Snapshot | Tests | Notes |
-|-------|---------|--------|----------|-------|-------|
-| Batch 1 | 7c1ae38...6b0034b (4) | ✅ Pass | snapshot-6b0034b | API health, DB, logs | 6/8 containers (nginx/adguard not yet in compose) |
+**Starting from:** 7c1ae38 (Phase 0: fork upstream, strip cruft)
 
 ### Phase 2-3: Network → Onboarding
 **Status:** Pending  
