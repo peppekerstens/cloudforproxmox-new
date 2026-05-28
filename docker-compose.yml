@@ -1,0 +1,134 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: proxmox-isp-postgres
+    environment:
+      POSTGRES_DB: proxmoxisp
+      POSTGRES_USER: proxmoxisp
+      POSTGRES_PASSWORD: dev_password_change_me
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxmoxisp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - isp-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: proxmox-isp-redis
+    command: redis-server --requirepass dev_redis_password --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "dev_redis_password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - isp-network
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: proxmox-isp-api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=debug
+      - DATABASE_URL=postgresql+asyncpg://proxmoxisp:dev_password_change_me@postgres:5432/proxmoxisp
+      - REDIS_URL=redis://:dev_redis_password@redis:6379/0
+      - CELERY_BROKER_URL=redis://:dev_redis_password@redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://:dev_redis_password@redis:6379/2
+      - JWT_SECRET_KEY=dev-jwt-secret-at-least-32-characters-long-change-me
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - isp-network
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: proxmox-isp-celery-worker
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    volumes:
+      - ./backend:/app
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://proxmoxisp:dev_password_change_me@postgres:5432/proxmoxisp
+      - REDIS_URL=redis://:dev_redis_password@redis:6379/0
+      - CELERY_BROKER_URL=redis://:dev_redis_password@redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://:dev_redis_password@redis:6379/2
+      - JWT_SECRET_KEY=dev-jwt-secret-at-least-32-characters-long-change-me
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - isp-network
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: proxmox-isp-celery-beat
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    volumes:
+      - ./backend:/app
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://proxmoxisp:dev_password_change_me@postgres:5432/proxmoxisp
+      - REDIS_URL=redis://:dev_redis_password@redis:6379/0
+      - CELERY_BROKER_URL=redis://:dev_redis_password@redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://:dev_redis_password@redis:6379/2
+      - JWT_SECRET_KEY=dev-jwt-secret-at-least-32-characters-long-change-me
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - isp-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: proxmox-isp-frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://192.168.2.133:8000/api/v1
+    depends_on:
+      - api
+    networks:
+      - isp-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  isp-network:
+    driver: bridge
