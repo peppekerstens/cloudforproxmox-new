@@ -82,26 +82,26 @@
 ---
 
 ### Phase 0-1: Setup → VM/LXC Foundation
-**Status:** Pending (Gate: Fork creation & verification)  
+**Status:** ✅ **PHASE 1 BATCH 1 COMPLETE**  
 **Architecture:** Two-repo model (fork + orchestration)  
-**Target Commits:** 179 across ~12-18 batches  
-**Target End Hash:** TBD  
+**Target Commits:** 303 total (179 in Batch 1..N)  
+**Batch 1 Complete:** db64b57..67efef0 (16 commits)  
 
 **Pre-Phase 1 Gate Criteria (Updated):**
-- [ ] Fork created: `anomalyco/cloudforproxmox-upstream`
-- [ ] Fork verified: upstream remote added, commits visible
-- [ ] Orchestration repo ready (this repo with all docs)
-- [ ] TWO_REPO_WORKFLOW.md reviewed by Phase 1 team
-- [ ] DEPLOYMENT_TRACKING.md template ready
-- [ ] First batch identified in REPLAY_PLAN_PHASE0-1.md
-- [ ] VM103 baseline snapshot: snapshot-upstream-final-cors-fixed
-- [ ] Phase 1 team has both repo URLs and SSH access to vm103
+- [x] Fork created: `peppekerstens/cloudforproxmox-new`
+- [x] Fork verified: upstream remote added, commits visible
+- [x] Orchestration repo ready (this repo with all docs)
+- [x] TWO_REPO_WORKFLOW.md reviewed and followed
+- [x] DEPLOYMENT_TRACKING.md template ready
+- [x] First batch identified in REPLAY_PLAN_PHASE0-1.md
+- [x] VM103 baseline snapshot: snapshot-upstream-final-cors-fixed
+- [x] Phase 1 team has both repo URLs and SSH access to vm103
 
 **Phase 1 Batches (Per TWO_REPO_WORKFLOW.md):**
 
 | Batch | Commits | Status | Fork Branch | Snapshot | Tag | Notes |
 |-------|---------|--------|-------------|-----------|----|-------|
-| 1 | 7c1ae38...{+10} | — | phase-1-batch-1 | — | — | Setup Infrastructure |
+| 1 | db64b57..67efef0 (16) | ✅ **TESTED** | phase-1-batch-1 | phase-1-batch-1-tested | phase-1-batch-1-tested | All 8 containers healthy, API responding |
 | 2 | {+12} | — | phase-1-batch-2 | — | — | Load Balancing |
 | ... | ... | — | phase-1-batch-* | — | — | ... |
 
@@ -229,3 +229,74 @@
 ### Phase 8-9: Audit → Billing
 **Status:** Pending  
 **Target:** 40 commits, end at 2ca9e1b
+
+---
+
+## Phase 1 Batch 1 Execution Summary ✅
+
+**Date:** 2026-05-28 22:15  
+**Duration:** ~2 hours (Phase 0 setup + Batch 1 replay)  
+
+### Workflow Executed
+1. ✅ Reset cloudforproxmox-upstream to pristine (master, no phase-1-batch-1 branch)
+2. ✅ Created phase-1-batch-1 branch in cloudforproxmox-new (target fork)
+3. ✅ Applied 16 commits from proxmox-isp (db64b57..67efef0) via git diff + patch
+4. ✅ Fixed docker-compose.yml paths (../ since file in infra/)
+5. ✅ Deployed to vm103 (docker-compose up -d)
+6. ✅ Verified all 8 containers healthy
+7. ✅ Created vm103 snapshot: phase-1-batch-1-tested
+8. ✅ Tagged phase-1-batch-1 in cloudforproxmox-new
+9. ✅ Pushed branch + tag to GitHub
+
+### Test Results
+- **Containers:** 8/8 healthy
+  - cloudplatform-postgres (healthy)
+  - cloudplatform-redis (healthy)
+  - cloudplatform-rabbitmq (healthy)
+  - cloudplatform-api (up 38 min)
+  - cloudplatform-frontend (up 38 min)
+  - cloudplatform-celery-worker (up 40 min)
+  - cloudplatform-celery-beat (up 40 min)
+  - cloudplatform-flower (up 40 min)
+- **API:** Responding on http://192.168.2.186:8000
+- **Frontend:** Accessible on http://192.168.2.186:3000
+- **Config:** VITE_API_URL=http://192.168.2.186:8000/api/v1, CORS_ORIGINS configured
+- **Snapshot:** phase-1-batch-1-tested created on vm103
+
+### Commits in Batch 1
+Source: proxmox-isp (7c1ae38..67efef0)
+1. db64b57 - Phase 0 complete: LXC provisioned, stack deployed, docs updated
+2. ba81e42 - feat: implement SDN networking (VXLAN/Simple), test infrastructure, and cleanup automation
+3. 0165d50 - chore: add AGPL-3.0 license and upstream attribution
+4. 6b0034b - docs: rewrite README.md with proper project overview
+5. ee49326 - chore: gitignore credentials, add .env.example template
+6. ae02055 - chore: add GitHub issue and PR templates
+7. 39d4913 - ci: add GitHub Actions workflow for lint, test, build
+8. 2386c57 - refactor: move docker-compose.yml to infra/ directory
+9. 501e7ca - test: restructure tests into unit/ and integration/ directories
+10. d2c346b - docs: add component READMEs for backend and frontend
+11. d658681 - docs: update AGENTS.md with git workflow, commit rules, and AI conventions
+12. c54e449 - docs: update PLAN.md with Phase A foundation status
+13. 77c4ef7 - fix: cascade soft-delete network interfaces and IP allocations on VM delete
+14. b28bec1 - fix: replace all datetime.utcnow() with datetime.now(timezone.utc)
+15. e989faf - fix: return 202 with warning when Proxmox VM deletion fails
+16. 67efef0 - docs: update PROJECT_STATUS.md — Phase B bugs fixed
+
+### Artifacts
+- **Fork Branch:** https://github.com/peppekerstens/cloudforproxmox-new/tree/phase-1-batch-1
+- **Tag:** https://github.com/peppekerstens/cloudforproxmox-new/releases/tag/phase-1-batch-1-tested
+- **VM Snapshot:** phase-1-batch-1-tested (Proxmox vm103, pve2 node)
+- **Docker Images:** Built (api, celery-worker, celery-beat, flower, frontend)
+
+### Architecture Status
+✅ Two-repo model working as designed:
+- cloudforproxmox-upstream: Pristine reference (master branch only)
+- cloudforproxmox-new: Working fork (main + phase-1-batch-1 + future batches)
+- proxmox-isp: Source of commits (363 total, Batch 1 applied)
+
+### Next Steps for Batch 2
+1. Identify commits for Batch 2 in REPLAY_PLAN_PHASE2-3.md
+2. Create phase-1-batch-2 branch from main
+3. Apply Batch 2 commits via diff method
+4. Deploy to vm103, create snapshot, tag, push
+5. Update REPLAY_STATUS.md with Batch 2 results
