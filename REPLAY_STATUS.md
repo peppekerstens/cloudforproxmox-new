@@ -82,14 +82,28 @@
 ---
 
 ### Phase 0-1: Setup → VM/LXC Foundation
-**Status:** Pending  
-**Target Commits:** 179  
+**Status:** Pending (Gate: Fork creation & verification)  
+**Architecture:** Two-repo model (fork + orchestration)  
+**Target Commits:** 179 across ~12-18 batches  
 **Target End Hash:** TBD  
-**Gate:** Fork upstream, update REPLAY_PLAN with branch/tag naming
 
-| Batch | Commits | Status | Last Snapshot | Notes |
-|-------|---------|--------|----------------|-------|
-| 1 | 7c1ae38...{+10} | — | — | — |
+**Pre-Phase 1 Gate Criteria (Updated):**
+- [ ] Fork created: `anomalyco/cloudforproxmox-upstream`
+- [ ] Fork verified: upstream remote added, commits visible
+- [ ] Orchestration repo ready (this repo with all docs)
+- [ ] TWO_REPO_WORKFLOW.md reviewed by Phase 1 team
+- [ ] DEPLOYMENT_TRACKING.md template ready
+- [ ] First batch identified in REPLAY_PLAN_PHASE0-1.md
+- [ ] VM103 baseline snapshot: snapshot-upstream-final-cors-fixed
+- [ ] Phase 1 team has both repo URLs and SSH access to vm103
+
+**Phase 1 Batches (Per TWO_REPO_WORKFLOW.md):**
+
+| Batch | Commits | Status | Fork Branch | Snapshot | Tag | Notes |
+|-------|---------|--------|-------------|-----------|----|-------|
+| 1 | 7c1ae38...{+10} | — | phase-1-batch-1 | — | — | Setup Infrastructure |
+| 2 | {+12} | — | phase-1-batch-2 | — | — | Load Balancing |
+| ... | ... | — | phase-1-batch-* | — | — | ... |
 
 ### Phase 2-3: Network → Onboarding
 **Status:** Pending  
@@ -110,12 +124,33 @@
 
 ---
 
+## Architecture Decision: Two-Repo Model (Option 2) ✅
+
+**Decision Date:** May 28, 2026  
+**Status:** ✅ DECIDED & DOCUMENTED  
+
+**Why Fork Over Revert:**
+- Authentic git history (not manual application)
+- Reproducible (checkout branch = exact state)
+- Traceable (upstream vs additions clear)
+- Safe rollback (git revert)
+- CI/CD ready
+- Scalable to teams
+
+**Repos:**
+1. `anomalyco/cloudforproxmox-upstream` (FORK - primary code)
+2. `anomalyco/cloudforproxmox` (ORCHESTRATION - docs/tracking)
+
+**See:** FORK_STRATEGY.md, TWO_REPO_WORKFLOW.md
+
+---
+
 ## Key Findings / Deviations
 
 1. **Ubuntu 24.04 vs. 22.04:** Newer version, different Python (3.12 vs. 3.10), but Docker & docker-compose compatible
-2. **vCPU 2 vs. 4:** May impact performance; will monitor for timeouts/slowdowns
+2. **vCPU 2 vs. 4:** Upgraded to 4 for docker build speed (complete, not deviation)
 3. **Docker 29.1.3:** Newer than spec (26.x), should be backward compatible
-4. **docker-compose v1.29.2:** Installed via pip (apt version had distutils dependency issue with Python 3.12)
+4. **docker-compose v1.29.2:** Known KeyError bug, workaround documented (docker system prune)
 
 ---
 

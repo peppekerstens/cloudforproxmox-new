@@ -8,19 +8,32 @@
 
 ## Quick Navigation
 
-### 🎯 Start Here
-- **REPLAY_STATUS.md** (6.5K) - Current status, phases, gate criteria
-- **UPSTREAM_DEPLOYMENT_PREREQUISITES.md** (13K) - Phase 0 complete, all issues documented
-- **FORK_STRATEGY.md** (8.5K) - Recommended fork strategy for Phase 1+
+### 🎯 Start Here (Phase 1 Team)
+1. **TWO_REPO_WORKFLOW.md** ⭐ (NEW - per-batch workflow)
+   - Complete guide: fork + orchestration repo
+   - Step-by-step workflow (identify → branch → test → tag → track)
+   - Git commands, testing procedures, snapshot management
+   - Handoff checklist
 
-### 📋 Planning & Tracking
-- **REPLAY_PLAN_PHASE0-1.md** (96K) - Setup & Foundation (179 commits)
-- **REPLAY_PLAN_PHASE2-3.md** (14K) - Network & Onboarding (22 commits)
-- **REPLAY_PLAN_PHASE4-5.md** (29K) - Multi-Tenant & RBAC (51 commits)
-- **REPLAY_PLAN_PHASE8-9.md** (23K) - Audit & Billing (40 commits)
-- **REPLAY_PLAN_PHASE12.md** (8.1K) - HTTPS (11 commits, expected failure)
-- **REPLAY_INDEX.md** (9.3K) - Commit index for all phases
+2. **FORK_STRATEGY.md** (Decision rationale)
+   - Why fork upstream (Option 2 selected)
+   - Comparison with alternatives (Option 1 rejected)
+   - Two-repo architecture explained
+
+3. **REPLAY_STATUS.md** (Current status)
+   - Which batch is deployed
+   - Gate criteria (pre-Phase 1)
+   - Phase progress tracking
+
+### 📋 Planning & Tracking (Orchestration Repo)
+- **REPLAY_PLAN_PHASE0-1.md** (96K) - Setup & Foundation (179 commits) ← Use in fork
+- **REPLAY_PLAN_PHASE2-3.md** (14K) - Network & Onboarding (22 commits) ← Use in fork
+- **REPLAY_PLAN_PHASE4-5.md** (29K) - Multi-Tenant & RBAC (51 commits) ← Use in fork
+- **REPLAY_PLAN_PHASE8-9.md** (23K) - Audit & Billing (40 commits) ← Use in fork
+- **REPLAY_PLAN_PHASE12.md** (8.1K) - HTTPS (11 commits, expected failure) ← Use in fork
+- **REPLAY_INDEX.md** (9.3K) - Searchable commit index for all phases
 - **REPLAY_SUMMARY.md** (7.8K) - High-level overview
+- **DEPLOYMENT_TRACKING.md** (TBD) - Maps vm103 state to fork branches (per-batch)
 
 ### ⚙️ Operations & Safety
 - **INFRASTRUCTURE_SAFEGUARDS.md** (14K) - Snapshot rotation, batch testing, failure handling
@@ -34,8 +47,9 @@
 
 | File | Type | Size | Purpose | Status |
 |------|------|------|---------|--------|
+| **TWO_REPO_WORKFLOW.md** ⭐ | Operations | TBD | Per-batch workflow (identify, branch, test, tag, track) | ✅ NEW |
 | **UPSTREAM_DEPLOYMENT_PREREQUISITES.md** ⭐ | Operations | 13K | Complete phase 0 guide: deployment, issues, solutions, config changes | ✅ DONE |
-| **FORK_STRATEGY.md** ⭐ | Planning | 8.5K | Upstream fork recommendation with implementation plan | ✅ READY |
+| **FORK_STRATEGY.md** ⭐ | Planning | 8.5K | Why fork was chosen (Option 2 selected) | ✅ DECIDED |
 | **REPLAY_STATUS.md** | Tracking | 6.5K | Current status, phases, deliverables, gate criteria | ✅ CURRENT |
 | REPLAY_PLAN_PHASE0-1.md | Planning | 96K | 179 commits for Setup & Foundation phase | 📍 REFERENCE |
 | REPLAY_PLAN_PHASE2-3.md | Planning | 14K | 22 commits for Network & Onboarding | 📍 REFERENCE |
@@ -242,31 +256,114 @@ All snapshots on vm103 (pve2, 192.168.2.186):
 
 ## Useful Commands
 
-### Check Phase 0 Status
+### Setup Two-Repo Model (One-Time)
+```bash
+# Clone fork (primary code)
+git clone https://github.com/anomalyco/cloudforproxmox-upstream ~/github/cloudforproxmox-upstream
+
+# Clone orchestration repo (docs/tracking)
+git clone https://github.com/anomalyco/cloudforproxmox ~/github/cloudforproxmox
+
+# In fork, verify upstream remote
+cd ~/github/cloudforproxmox-upstream
+git remote add upstream https://github.com/proxmox-cloudportal/cloud-platform
+git fetch upstream
+git log --oneline --all | head -20
+```
+
+### Check Current Deployment Status
+```bash
+# Which batch is currently deployed?
+cat ~/github/cloudforproxmox/REPLAY_STATUS.md | grep "Current"
+
+# Verify on vm103
+ssh peppe@192.168.2.186 "cd /home/peppe/cloud-platform-upstream && git branch -v"
+
+# Check containers
+ssh peppe@192.168.2.186 "docker ps --format 'table {{.Names}}\t{{.Status}}'"
+```
+
+### Create Batch Branch (Per-Batch Workflow)
+```bash
+cd ~/github/cloudforproxmox-upstream
+
+# Create and checkout branch
+git checkout -b phase-1-batch-1
+
+# Cherry-pick commits (example: 7c1ae38 to 7c2b456)
+git cherry-pick 7c1ae38^..7c2b456
+
+# View commits in batch
+git log --oneline upstream/main..phase-1-batch-1
+
+# After testing, tag
+git tag -a phase-1-batch-1-tested -m "Tested on vm103"
+git push origin phase-1-batch-1 phase-1-batch-1-tested
+```
+
+### Test Batch on vm103
+```bash
+ssh peppe@192.168.2.186 "
+  cd /home/peppe/cloud-platform-upstream && \
+  git fetch origin && \
+  git checkout phase-1-batch-1 && \
+  docker-compose up -d && \
+  sleep 15 && \
+  docker ps --format 'table {{.Names}}\t{{.Status}}' && \
+  curl -s http://192.168.2.186:8000/api/v1/health/detailed | jq .status
+"
+```
+
+### Update Status in Orchestration Repo
 ```bash
 cd ~/github/cloudforproxmox
-git log --oneline -5
-ssh peppe@192.168.2.186 "docker ps --format 'table {{.Names}}\t{{.Status}}'"
-curl -s http://192.168.2.186:8000/api/v1/health/detailed
+
+# Edit REPLAY_STATUS.md to mark batch as complete
+# Update: Branch, Snapshot, Tag, Date
+
+git add REPLAY_STATUS.md
+git commit -m "status: phase-1-batch-1 tested and verified
+
+Branch: phase-1-batch-1 (commits 7c1ae38...7c2b456)
+Snapshot: snapshot-phase-1-batch-1-tested
+Tests: ✅ All containers healthy, login verified"
+
+git push origin main
 ```
 
-### Restore Snapshot
+### Rollback to Previous Batch (If Needed)
 ```bash
-qm snapshot 103 snapshot-upstream-final-cors-fixed
-# Then bring containers up:
-ssh peppe@192.168.2.186 "cd /home/peppe/cloud-platform-upstream && docker-compose up -d"
+cd ~/github/cloudforproxmox-upstream
+
+# Check commit to revert
+git log --oneline phase-1-batch-2 | head -5
+
+# Revert bad commit
+git revert <bad-commit-hash>
+git push origin phase-1-batch-2-revised
+
+# On vm103, switch back to previous batch
+ssh peppe@192.168.2.186 "
+  cd /home/peppe/cloud-platform-upstream && \
+  git checkout phase-1-batch-1 && \
+  docker-compose up -d
+"
 ```
 
-### View REPLAY_PLAN for Phase 1
+### View Which Phase Contains a Commit
 ```bash
-head -100 ~/github/cloudforproxmox/REPLAY_PLAN_PHASE0-1.md
-grep "^- \[" ~/github/cloudforproxmox/REPLAY_PLAN_PHASE0-1.md | head -20
+cd ~/github/cloudforproxmox-upstream
+git branch -a --contains 7c1ae38
+# Output: phase-1-batch-1
+
+# Or search all branches
+git log --all --oneline | grep "specific message"
 ```
 
-### Find Commit Details
+### List All Batch Tags
 ```bash
-grep "7c1ae38" ~/github/cloudforproxmox/REPLAY_INDEX.md
-# or search REPLAY_PLAN_PHASE0-1.md
+cd ~/github/cloudforproxmox-upstream
+git tag | grep phase | sort
 ```
 
 ---

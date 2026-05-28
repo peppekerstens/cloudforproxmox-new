@@ -1,8 +1,9 @@
-# Fork Strategy: Transitioning from Read-Only to Maintainable Development
+# Fork Strategy: Two-Repo Architecture for 303-Commit Replay
 
-**Status:** RECOMMENDED (Pre-Phase 1)  
-**Decision Point:** Before beginning Phase 1 replay  
-**Impact:** Git history management, traceability, reproducibility
+**Status:** ✅ DECIDED (Option 2 Selected)  
+**Decision Date:** May 28, 2026  
+**Rationale:** Authentic git history, reproducibility, traceability, maintainability  
+**Impact:** Core architecture for entire Phase 1-12 replay
 
 ---
 
@@ -236,37 +237,70 @@ Align VM snapshots with git tags:
 
 ---
 
-## Decision: When to Fork
+## Decision: OPTION 2 SELECTED ✅
 
-### Option A: Fork Now (Recommended)
-- Pros: Clean baseline, all phases benefit from traceability
-- Cons: One-time setup overhead (~5 min)
-- **Recommendation:** DO THIS
+### What Was Evaluated
 
-### Option B: Fork After Phase 1
-- Pros: See replay workflow first, then optimize
-- Cons: Phase 1 git history messy, harder to trace back
-- **Recommendation:** NOT IDEAL
+**Option 1: Revert & Restart (Single Repo)**
+- Revert da8053e, apply 303 commits manually into cloudforproxmox-new
+- ❌ Git history inauthentic, not reproducible, high error risk
+- ❌ Can't `git checkout phase-1` and get exact state
+- ❌ Doesn't solve traceability problem
+- ❌ CI/CD unfeasible
+- **Decision: REJECTED**
 
-### Option C: Never Fork (Keep Read-Only)
-- Pros: No GitHub setup overhead
-- Cons: All risks above, nightmare to maintain
-- **Recommendation:** AVOID
+**Option 2: Fork Upstream (Two-Repo Architecture)** ✅
+- Create fork: `anomalyco/cloudforproxmox-upstream` (primary code)
+- Keep cloudforproxmox-new as docs/orchestration (secondary tracking)
+- ✅ Authentic git history, clean branches per batch
+- ✅ Reproducible (anyone can checkout and get exact state)
+- ✅ Traceable (know upstream vs added changes)
+- ✅ CI/CD ready
+- ✅ Safe rollback (git revert, not manual undo)
+- **Decision: SELECTED** ✅
+
+### Rationale
+
+- **303 commits deserve authentic history** — not manual application
+- **Reproducibility critical** — must validate accuracy per batch
+- **Future maintainability** — future developers need git intent
+- **Low setup cost** (10 min), high payoff (100+ hours saved)
+- **Aligns with 2026 DevOps best practices** (git as single source of truth)
 
 ---
 
-## Action Items
+## Action Items (Phase 0 → Phase 1 Gate)
 
-- [ ] Create fork on GitHub: `anomalyco/cloudforproxmox-upstream`
-- [ ] Update cloudforproxmox-new remotes: `git remote add upstream ...`
-- [ ] Document in README.md how to clone with both remotes
-- [ ] Update REPLAY_PLAN_*.md files with branch/tag naming
-- [ ] Start Phase 1 using forked upstream as reference
+**Before Phase 1 Begins:**
+- [ ] Create fork on GitHub: `anomalyco/cloudforproxmox-upstream` (5 min)
+- [ ] Add fork as remote to cloudforproxmox-new: `git remote add upstream <url>` (1 min)
+- [ ] Verify setup: `git fetch upstream; git log --oneline --all` (1 min)
+- [ ] Create Phase 1 branch in fork: `phase-1-batch-1` (1 min)
+- [ ] Review REPLAY_PLAN_PHASE0-1.md and TWO_REPO_WORKFLOW.md (20 min)
+
+**Total Setup Time:** ~30 minutes
+
+**See Also:** TWO_REPO_WORKFLOW.md for detailed per-batch workflow
+
+---
+
+## Implementation: See TWO_REPO_WORKFLOW.md
+
+This file explains the high-level strategy. For the **detailed per-batch workflow**, including:
+- Step-by-step procedure for each batch
+- Git commands (create branch, cherry-pick, tag, push)
+- Testing procedures on vm103
+- Status tracking in orchestration repo
+- Snapshot management
+- Rollback procedures
+
+**See:** TWO_REPO_WORKFLOW.md
 
 ---
 
 ## References
 
+- **TWO_REPO_WORKFLOW.md** ← START HERE (per-batch workflow)
 - **GitHub Fork Docs:** https://docs.github.com/en/get-started/quickstart/fork-a-repo
 - **Git Remote Management:** https://git-scm.com/book/en/v2/Git-Basics-Working-with-Remotes
 - **Cherry-Pick Guide:** https://git-scm.com/docs/git-cherry-pick
@@ -276,9 +310,22 @@ Align VM snapshots with git tags:
 
 ## Summary
 
-**Current:** Manual replay from read-only reference (error-prone, hard to maintain)  
-**Proposed:** Official fork + clean branches + git tags (traceable, reproducible, safe)  
-**Effort:** ~5 min setup + 2 min per batch (branch/tag creation)  
-**Benefit:** 10x better maintainability, CI/CD ready, future-proof
+**Problem:** Manual replay from read-only reference (error-prone, untraceable)  
+**Solution:** Two-repo architecture
+- Fork (anomalyco/cloudforproxmox-upstream): Authentic code history, branches per batch
+- Orchestration (anomalyco/cloudforproxmox): Docs, status tracking, decision records
 
-**Recommendation:** Implement fork strategy before Phase 1 replay.
+**Benefits:**
+✅ Authentic git history (commits preserved exactly)  
+✅ Reproducible (checkout branch = exact state)  
+✅ Traceable (know upstream vs added changes)  
+✅ Safe (git revert instead of manual undo)  
+✅ CI/CD ready (can test per branch)  
+✅ Scalable (teams can work on different batches)  
+✅ Maintainable (future developers understand intent)
+
+**Effort:** ~30 min setup + 2-4 hours per batch (including testing)  
+**Scope:** 303 commits across 12 phases  
+**Status:** ✅ DECIDED & DOCUMENTED
+
+**Start:** See TWO_REPO_WORKFLOW.md for per-batch procedure
