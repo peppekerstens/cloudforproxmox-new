@@ -364,6 +364,60 @@ Before commencing Phase 1 (commits 7c1ae38...next):
 
 ---
 
+---
+
+## Phase 0 Addition: Proxmox Cluster Integration ✅
+
+**Date:** May 28, 2026  
+**Status:** ✅ COMPLETE - Cluster registered and verified  
+**Reference:** PROXMOX_CLUSTER_INTEGRATION.md (comprehensive guide)
+
+### Integration Summary
+
+Successfully integrated Proxmox cluster (pve2-production) with cloud-platform. The system can now manage VMs, containers, snapshots, and resources on Proxmox nodes pve2 and pve1 via REST API and web UI.
+
+**Cluster Details:**
+- Name: `pve2-production`
+- Cluster ID: `06fd7cc0-1db5-438f-830c-7498f72d94f6`
+- Proxmox URL: `https://192.168.2.22:8006`
+- Version: 9.1.5
+- Nodes: 2 (pve2, pve1)
+- Authentication: API Token (root@pam!cloud-platform)
+- Status: ✅ Active & Connected
+
+**What Was Done:**
+1. Created Proxmox API token: `root@pam!cloud-platform`
+2. Registered cluster in cloud-platform API (POST /api/v1/clusters)
+3. Tested connection successfully (version: 9.1.5, nodes: [pve2, pve1])
+4. Verified cluster listed and active (GET /api/v1/clusters)
+
+**What This Enables:**
+- Create and manage VMs on Proxmox cluster
+- Create and restore snapshots
+- Manage containers (LXCs)
+- Monitor resource usage
+- Control VM lifecycle (start, stop, reboot)
+- Access VM consoles
+- Configure networking and storage
+
+**See PROXMOX_CLUSTER_INTEGRATION.md for:**
+- Step-by-step integration procedure
+- API token creation and security
+- Testing procedures
+- Troubleshooting guide
+- Complete API endpoint documentation
+
+### Pre-Phase 1 Gate Update
+
+Proxmox cluster integration is now a prerequisite for Phase 1. Verify:
+- [x] Proxmox cluster accessible and running
+- [x] API token created in Proxmox
+- [x] Cluster registered in cloud-platform
+- [x] Connection test passes
+- [x] Nodes discovered successfully
+
+---
+
 ## References
 
 - **VM Access:** `ssh peppe@192.168.2.186` (password: TestDit1234_)
@@ -371,9 +425,11 @@ Before commencing Phase 1 (commits 7c1ae38...next):
 - **API:** http://192.168.2.186:8000/api/v1
 - **Flower (Celery):** http://192.168.2.186:5555
 - **Proxmox Console:** pve2 → vm103 (VM ID 103)
+- **Proxmox Cluster:** https://192.168.2.22:8006
 - **Upstream Repo:** https://github.com/proxmox-cloudportal/cloud-platform
 - **Local Reference:** ~/github/proxmox-isp (cloudforproxmox-old, read-only)
 - **Development Repo:** ~/github/cloudforproxmox (cloudforproxmox-new, current)
+- **Integration Guide:** PROXMOX_CLUSTER_INTEGRATION.md (this repo)
 
 ---
 
