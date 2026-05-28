@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[opencode-claude-hooks] Session started at $(date)' >> .hook-logs/session.log"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[opencode-claude-hooks] Session ended at $(date)' >> .hook-logs/session.log"
+          }
+        ]
+      }
+    ]
+  }
+}

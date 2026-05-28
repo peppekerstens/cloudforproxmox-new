@@ -1,0 +1,36 @@
+Proxmox ISP
+Copyright (C) 2026 Peppe Kerstens
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+## Upstream Attribution
+
+This project is derived from:
+
+  proxmox-cloudportal/cloud-platform
+  https://github.com/proxmox-cloudportal/cloud-platform
+
+The upstream repository was released without an explicit license file.
+Its README stated "TBD - Likely MIT or Apache 2.0" but no license was
+ever committed. Under GitHub's Terms of Service, code without a license
+is All Rights Reserved.
+
+This project (proxmox-isp) applies the GNU AGPL v3.0 to all modifications
+and additions made by the proxmox-isp authors. The upstream codebase is
+included under fair use for the purpose of creating a derivative work.
+
+If you are the upstream author and wish to clarify the license terms,
+please contact the proxmox-isp maintainers.
