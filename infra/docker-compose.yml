@@ -62,12 +62,12 @@ services:
   # Backend API
   api:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     container_name: cloudplatform-api
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
-      - ./backend:/app
+      - .../backend:/app
     ports:
       - "8000:8000"
     environment:
@@ -93,12 +93,12 @@ services:
   # Celery Worker
   celery-worker:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     container_name: cloudplatform-celery-worker
-    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.celery_app worker --loglevel=debug
     volumes:
-      - ./backend:/app
+      - .../backend:/app
     environment:
       - ENVIRONMENT=development
       - DATABASE_URL=postgresql+asyncpg://cloudplatform:cloudplatform_dev_password@postgres:5432/cloudplatform
@@ -116,12 +116,12 @@ services:
   # Celery Beat (Periodic Tasks)
   celery-beat:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     container_name: cloudplatform-celery-beat
     command: celery -A app.tasks.celery_app beat --loglevel=info
     volumes:
-      - ./backend:/app
+      - ../backend:/app
     environment:
       - ENVIRONMENT=development
       - DATABASE_URL=postgresql+asyncpg://cloudplatform:cloudplatform_dev_password@postgres:5432/cloudplatform
@@ -139,7 +139,7 @@ services:
   # Flower (Celery monitoring)
   flower:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     container_name: cloudplatform-flower
     command: celery -A app.tasks.celery_app flower --port=5555
@@ -161,11 +161,11 @@ services:
   # Frontend (React)
   frontend:
     build:
-      context: ./frontend
+      context: ../frontend
       dockerfile: Dockerfile.dev
     container_name: cloudplatform-frontend
     volumes:
-      - ./frontend:/app
+      - ../frontend:/app
       - /app/node_modules
     ports:
       - "3000:3000"
