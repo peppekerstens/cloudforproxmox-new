@@ -108,13 +108,20 @@
 
 ---
 
-## Execution Strategy
+## Execution Strategy (REVISED)
 
-**Git commit structure:** Per-batch (Option C)
+**Phase 1: Install & validate upstream base**
+- Rebuild vm103 clean (rollback to snapshot-initial)
+- Clone https://github.com/proxmox-cloudportal/cloud-platform
+- Deploy upstream, verify all tests pass
+- Create snapshot: snapshot-upstream-working
+- Commit working upstream to cloudforproxmox-new
+
+**Phase 2: Replay commits on upstream base**
+- Deploy commits 7c1ae38 → 2ca9e1b (fork + modifications)
+- Git commit structure: Per-batch (Option C)
 - Each batch of 5-10 commits = 1 commit in cloudforproxmox-new
-- Phase-level summary: ~4-10 commits per phase
 - Total: ~38-42 commits by 2ca9e1b
-- Each commit message: `feat(Phase X-Y): Batch N - deployed commits {hash}...{hash}. All tests passed.`
 
 **Endpoint:** Build to commit 2ca9e1b (working state before HTTPS failure)
 
