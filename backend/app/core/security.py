@@ -1,7 +1,7 @@
 """
 Security utilities for password hashing and JWT token management.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 from jose import JWTError, jwt
