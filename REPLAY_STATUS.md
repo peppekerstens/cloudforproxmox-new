@@ -33,26 +33,59 @@
 |------|---------------|--------|--------|
 | **OS** | Ubuntu 22.04 LTS | Ubuntu 24.04.4 LTS | ⚠️ Newer (tested OK) |
 | **Kernel** | 6.8 | 6.8 | ✅ Match |
-| **vCPU** | 4 | 2 | ⚠️ Half (will monitor) |
+| **vCPU** | 4 | 4 | ✅ Match (upgraded from 2) |
 | **RAM** | 4GB | 4GB (4096MB) | ✅ Match |
 | **Disk** | 20GB | 20GB | ✅ Match |
 | **Docker** | 26.x | 29.1.3 | ✅ Compatible (newer) |
 | **docker-compose** | 1.29.2 | 1.29.2 | ✅ Match |
 
-### Baseline Snapshot
-- **Name:** snapshot-initial
-- **Created:** 2026-05-28
-- **Description:** Baseline: Ubuntu 24.04, Docker 29.1.3, docker-compose 1.29.2
-- **State:** Clean (Docker/compose installed, no containers running)
+### Baseline Snapshots (Phase 0: Upstream Deployment)
+- **snapshot-upstream-working**
+  - Created: 2026-05-28 21:04:59
+  - Description: Upstream cloud-platform deployed, all 8 containers healthy
+  - State: Upstream code running, no login tested
+
+- **snapshot-upstream-final-cors-fixed** ⭐ **CURRENT BASELINE**
+  - Created: 2026-05-28 21:19:14
+  - Description: Upstream cloud-platform working: login verified, CORS fixed, all containers healthy
+  - State: ✅ Ready for Phase 1 replay
+  - Prerequisites: VITE_API_URL, CORS_ORIGINS configured
+  - Verified: Login successful, dashboard accessible
 
 ---
 
 ## Replay Progress
 
+### Phase 0: Upstream Deployment ✅ **COMPLETE**
+**Status:** ✅ COMPLETE  
+**Duration:** ~1 hour  
+**Issues Resolved:** 3 (API URL, CORS, docker-compose bug)
+
+**Deliverables:**
+- ✅ vm103 upgraded to 4 vCPU
+- ✅ Upstream cloud-platform deployed
+- ✅ All 8 containers healthy (postgres, redis, rabbitmq, api, frontend, celery-worker, celery-beat, flower)
+- ✅ API responding (`/api/v1/health/detailed` → healthy)
+- ✅ Frontend accessible (http://192.168.2.186:3000)
+- ✅ Login verified (admin@example.org → dashboard)
+- ✅ Configuration documented: VITE_API_URL, CORS_ORIGINS
+- ✅ Snapshot: `snapshot-upstream-final-cors-fixed` (baseline for Phase 1)
+- ✅ Documentation: UPSTREAM_DEPLOYMENT_PREREQUISITES.md, FORK_STRATEGY.md
+
+**Issues & Solutions:**
+1. **API URL:** VITE_API_URL hardcoded to localhost → set env var to 192.168.2.186:8000
+2. **CORS:** Frontend origin 192.168.2.186:3000 not in allowlist → added to CORS_ORIGINS env
+3. **docker-compose:** v1.29.2 KeyError: 'ContainerConfig' bug → workaround: `docker system prune -a --volumes -f`
+
+**Pre-Phase 1 Gate:** ✅ PASSED
+
+---
+
 ### Phase 0-1: Setup → VM/LXC Foundation
 **Status:** Pending  
 **Target Commits:** 179  
 **Target End Hash:** TBD  
+**Gate:** Fork upstream, update REPLAY_PLAN with branch/tag naming
 
 | Batch | Commits | Status | Last Snapshot | Notes |
 |-------|---------|--------|----------------|-------|
