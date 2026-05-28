@@ -102,7 +102,7 @@
 | Batch | Commits | Status | Fork Branch | Snapshot | Tag | Notes |
 |-------|---------|--------|-------------|-----------|----|-------|
 | 1 | db64b57..67efef0 (16) | ✅ **VERIFIED** | phase-1-batch-1 | phase-1-batch-1-final | phase-1-batch-1-tested | Login works, 8/8 containers healthy |
-| 2 | {+12} | — | phase-1-batch-2 | — | — | Load Balancing |
+| 2 | 8bbd9b8..be13bb8 (11) | — | phase-1-batch-2 | — | — | LXC/templates/cluster details, Phase 1 complete |
 | ... | ... | — | phase-1-batch-* | — | — | ... |
 
 ### Phase 2-3: Network → Onboarding
@@ -333,3 +333,63 @@ These should be fixed upstream or in early batches:
 1. Datetime handling inconsistency: Some code uses naive datetime, some uses timezone-aware
 2. Database column types: `TIMESTAMP WITHOUT TIME ZONE` incompatible with timezone-aware datetime objects
 3. Missing timezone imports across multiple modules (auth.py, security.py confirmed)
+
+---
+
+## Phase 1 Batch 2 Planning ⏳
+
+**Status:** Identified, ready for deployment  
+**Commits:** 8bbd9b8..be13bb8 (11 commits)  
+**Features:** LXC containerization, VM templates, cluster management, Phase 1 completion  
+
+### Batch 2 Commits
+1. 8bbd9b8 - docs: mark Phase B complete, add next phase planning
+2. 8d5ad15 - docs: archive project history, streamline PLAN.md, update status
+3. 18f428b - fix: add /settings redirect to /organization/settings
+4. 770a2de - fix: enable ISO transfer and cleanup Celery tasks
+5. 3c1f1d7 - docs: update status for Phase 1 epics 1.3 and 1.4 complete
+6. fe4fac0 - feat: add cluster detail page at /clusters/:id
+7. ad5f6c3 - docs: update status for Phase 1 epic 1.5 complete
+8. f978333 - feat: add VM template support (convert, list, clone)
+9. 296be75 - docs: update status for Phase 1 epic 1.1 complete
+10. 1c89305 - feat: add LXC container creation support
+11. be13bb8 - docs: Phase 1 complete — all 5 epics done
+
+### Key Features to Test
+- LXC container creation endpoint (POST /api/v1/containers)
+- VM template listing and cloning (GET/POST /api/v1/templates)
+- Cluster detail view at /clusters/:id (frontend)
+- ISO transfer functionality
+- Settings redirect to /organization/settings
+
+### Deployment Steps (Ready to Execute)
+```bash
+# 1. In proxmox-isp:
+git diff 67efef0 be13bb8 > /tmp/batch2.patch
+
+# 2. In cloudforproxmox-new:
+git checkout -b phase-1-batch-2 main
+git apply /tmp/batch2.patch
+git commit -am "Phase 1 Batch 2: LXC/templates/cluster management (11 commits)"
+git push origin phase-1-batch-2
+
+# 3. On vm103:
+cd ~/cloud-platform-upstream
+git fetch origin
+git checkout phase-1-batch-2
+docker-compose down && docker-compose up -d --build
+
+# 4. Test:
+curl -X GET http://192.168.2.186:8000/api/v1/health
+curl -X POST http://192.168.2.186:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.org","password":"superadmin"}'
+# Test new endpoints...
+
+# 5. Create snapshot:
+proxmox: Create snapshot phase-1-batch-2-final
+
+# 6. Tag and push:
+git tag -a phase-1-batch-2-tested -m "Batch 2: LXC/templates verified"
+git push origin phase-1-batch-2-tested
+```
