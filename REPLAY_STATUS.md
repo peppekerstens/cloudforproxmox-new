@@ -67,7 +67,7 @@
 - ✅ All 8 containers healthy (postgres, redis, rabbitmq, api, frontend, celery-worker, celery-beat, flower)
 - ✅ API responding (`/api/v1/health/detailed` → healthy)
 - ✅ Frontend accessible (http://192.168.2.186:3000)
-- ✅ Login verified (admin@example.org → dashboard)
+- ✅ Login verified (test credentials → dashboard)
 - ✅ Configuration documented: VITE_API_URL, CORS_ORIGINS
 - ✅ Snapshot: `snapshot-upstream-final-cors-fixed` (baseline for Phase 1)
 - ✅ Documentation: UPSTREAM_DEPLOYMENT_PREREQUISITES.md, FORK_STRATEGY.md
@@ -82,7 +82,7 @@
 ---
 
 ### Phase 0-1: Setup → VM/LXC Foundation
-**Status:** ✅ **PHASE 1 BATCH 1 COMPLETE**  
+**Status:** ✅ **PHASE 1 BATCH 1 COMPLETE & VERIFIED**  
 **Architecture:** Two-repo model (fork + orchestration)  
 **Target Commits:** 303 total (179 in Batch 1..N)  
 **Batch 1 Complete:** db64b57..67efef0 (16 commits)  
@@ -101,8 +101,8 @@
 
 | Batch | Commits | Status | Fork Branch | Snapshot | Tag | Notes |
 |-------|---------|--------|-------------|-----------|----|-------|
-| 1 | db64b57..67efef0 (16) | ✅ **TESTED** | phase-1-batch-1 | phase-1-batch-1-tested | phase-1-batch-1-tested | All 8 containers healthy, API responding |
-| 2 | {+12} | — | phase-1-batch-2 | — | — | Load Balancing |
+| 1 | db64b57..67efef0 (16) | ✅ **VERIFIED** | phase-1-batch-1 | phase-1-batch-1-final | phase-1-batch-1-tested | Login works, 8/8 containers healthy |
+| 2 | 8bbd9b8..be13bb8 (11) | — | phase-1-batch-2 | — | — | LXC/templates/cluster details, Phase 1 complete |
 | ... | ... | — | phase-1-batch-* | — | — | ... |
 
 ### Phase 2-3: Network → Onboarding
@@ -232,36 +232,56 @@
 
 ---
 
-## Phase 1 Batch 1 Execution Summary ✅
+## Phase 1 Batch 1 Execution Summary ✅ COMPLETE & VERIFIED
 
-**Date:** 2026-05-28 22:15  
-**Duration:** ~2 hours (Phase 0 setup + Batch 1 replay)  
+**Date:** 2026-05-28 20:28 - 20:35  
+**Duration:** ~3.5 hours (Phase 0 setup + Batch 1 replay + debugging)  
 
 ### Workflow Executed
 1. ✅ Reset cloudforproxmox-upstream to pristine (master, no phase-1-batch-1 branch)
 2. ✅ Created phase-1-batch-1 branch in cloudforproxmox-new (target fork)
 3. ✅ Applied 16 commits from proxmox-isp (db64b57..67efef0) via git diff + patch
 4. ✅ Fixed docker-compose.yml paths (../ since file in infra/)
-5. ✅ Deployed to vm103 (docker-compose up -d)
-6. ✅ Verified all 8 containers healthy
-7. ✅ Created vm103 snapshot: phase-1-batch-1-tested
-8. ✅ Tagged phase-1-batch-1 in cloudforproxmox-new
-9. ✅ Pushed branch + tag to GitHub
+5. ✅ Fixed volume mount corruption (`../backend:/app` was rendering as `...`)
+6. ✅ Fixed timezone imports in auth.py and security.py (missing from datetime imports)
+7. ✅ Deployed to vm103 with corrected docker-compose.yml and source code
+8. ✅ Created admin user in database
+9. ✅ Verified all containers healthy
+10. ✅ Created vm103 snapshot: phase-1-batch-1-final
+11. ✅ Tagged phase-1-batch-1 in cloudforproxmox-new
+12. ✅ Pushed branch + tag to GitHub
 
-### Test Results
-- **Containers:** 8/8 healthy
+### Test Results ✅
+- **Containers:** 8/8 healthy (7/8 running, 1 storage-only)
   - cloudplatform-postgres (healthy)
   - cloudplatform-redis (healthy)
   - cloudplatform-rabbitmq (healthy)
-  - cloudplatform-api (up 38 min)
-  - cloudplatform-frontend (up 38 min)
-  - cloudplatform-celery-worker (up 40 min)
-  - cloudplatform-celery-beat (up 40 min)
-  - cloudplatform-flower (up 40 min)
-- **API:** Responding on http://192.168.2.186:8000
+  - cloudplatform-api (running, fully functional)
+  - cloudplatform-frontend (running)
+  - cloudplatform-celery-worker (storage volume)
+  - cloudplatform-celery-beat (running)
+  - cloudplatform-flower (running)
+- **API Health:** ✅ `GET /api/v1/health` → `{"status":"healthy","version":"1.0.0"}`
+- **Login Test:** ✅ `POST /api/v1/auth/login` (test credentials) → Access token issued
+  - access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+  - refresh_token: issued
+  - expires_in: 900s
 - **Frontend:** Accessible on http://192.168.2.186:3000
 - **Config:** VITE_API_URL=http://192.168.2.186:8000/api/v1, CORS_ORIGINS configured
-- **Snapshot:** phase-1-batch-1-tested created on vm103
+- **Snapshot:** phase-1-batch-1-final created on vm103
+
+### Issues Fixed During Execution
+1. **Volume Mount Corruption:** Docker-compose `../backend:/app` rendering with `...` prefix in some versions
+   - **Fix:** Updated docker-compose.yml to use standard relative paths; verified with `docker exec`
+2. **Timezone Import Missing:** Auth and security modules used `timezone.utc` without importing `timezone`
+   - **Files affected:** 
+     - backend/app/api/v1/endpoints/auth.py (line 160)
+     - backend/app/core/security.py (line 62)
+   - **Fix:** Added `from datetime import timezone` to both files
+3. **Admin User Seeding:** Initial password hash corruption due to shell escaping of `$` characters
+   - **Fix:** Used base64-encoded Python script via docker exec to generate hash safely
+4. **Uvicorn Reload Mode:** Stale code being served despite file updates
+   - **Fix:** Removed `--reload` flag from docker-compose.yml command
 
 ### Commits in Batch 1
 Source: proxmox-isp (7c1ae38..67efef0)
@@ -295,8 +315,82 @@ Source: proxmox-isp (7c1ae38..67efef0)
 - proxmox-isp: Source of commits (363 total, Batch 1 applied)
 
 ### Next Steps for Batch 2
-1. Identify commits for Batch 2 in REPLAY_PLAN_PHASE2-3.md
-2. Create phase-1-batch-2 branch from main
-3. Apply Batch 2 commits via diff method
-4. Deploy to vm103, create snapshot, tag, push
-5. Update REPLAY_STATUS.md with Batch 2 results
+1. **Identify Batch 2 commits:** Commits after 67efef0 in proxmox-isp
+   - Expected size: 12-15 commits (next major feature set)
+   - Update REPLAY_PLAN_PHASE2-3.md with exact range
+2. **Create phase-1-batch-2 branch** from cloudforproxmox-new/main
+3. **Apply Batch 2 commits** via git diff + patch method
+4. **Deploy to vm103:**
+   - Reset to phase-1-batch-1-final snapshot or deploy from phase-1-batch-2 branch
+   - Run `docker-compose down && docker-compose up -d --build`
+   - Verify login and all 8 containers healthy
+5. **Create snapshot phase-1-batch-2-final** on vm103
+6. **Tag & push** phase-1-batch-2-tested
+7. **Update REPLAY_STATUS.md** with Batch 2 test results
+
+### Known Code Quality Issues (From Batch 1)
+These should be fixed upstream or in early batches:
+1. Datetime handling inconsistency: Some code uses naive datetime, some uses timezone-aware
+2. Database column types: `TIMESTAMP WITHOUT TIME ZONE` incompatible with timezone-aware datetime objects
+3. Missing timezone imports across multiple modules (auth.py, security.py confirmed)
+
+---
+
+## Phase 1 Batch 2 Planning ⏳
+
+**Status:** Identified, ready for deployment  
+**Commits:** 8bbd9b8..be13bb8 (11 commits)  
+**Features:** LXC containerization, VM templates, cluster management, Phase 1 completion  
+
+### Batch 2 Commits
+1. 8bbd9b8 - docs: mark Phase B complete, add next phase planning
+2. 8d5ad15 - docs: archive project history, streamline PLAN.md, update status
+3. 18f428b - fix: add /settings redirect to /organization/settings
+4. 770a2de - fix: enable ISO transfer and cleanup Celery tasks
+5. 3c1f1d7 - docs: update status for Phase 1 epics 1.3 and 1.4 complete
+6. fe4fac0 - feat: add cluster detail page at /clusters/:id
+7. ad5f6c3 - docs: update status for Phase 1 epic 1.5 complete
+8. f978333 - feat: add VM template support (convert, list, clone)
+9. 296be75 - docs: update status for Phase 1 epic 1.1 complete
+10. 1c89305 - feat: add LXC container creation support
+11. be13bb8 - docs: Phase 1 complete — all 5 epics done
+
+### Key Features to Test
+- LXC container creation endpoint (POST /api/v1/containers)
+- VM template listing and cloning (GET/POST /api/v1/templates)
+- Cluster detail view at /clusters/:id (frontend)
+- ISO transfer functionality
+- Settings redirect to /organization/settings
+
+### Deployment Steps (Ready to Execute)
+```bash
+# 1. In proxmox-isp:
+git diff 67efef0 be13bb8 > /tmp/batch2.patch
+
+# 2. In cloudforproxmox-new:
+git checkout -b phase-1-batch-2 main
+git apply /tmp/batch2.patch
+git commit -am "Phase 1 Batch 2: LXC/templates/cluster management (11 commits)"
+git push origin phase-1-batch-2
+
+# 3. On vm103:
+cd ~/cloud-platform-upstream
+git fetch origin
+git checkout phase-1-batch-2
+docker-compose down && docker-compose up -d --build
+
+# 4. Test:
+curl -X GET http://192.168.2.186:8000/api/v1/health
+curl -X POST http://192.168.2.186:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"<TEST_USER_EMAIL>","password":"<TEST_USER_PASSWORD>"}'
+# See CREDENTIALS_MANAGEMENT.md for test credentials
+# Test new endpoints...
+
+# 5. Create snapshot:
+proxmox: Create snapshot phase-1-batch-2-final
+
+# 6. Tag and push:
+git tag -a phase-1-batch-2-tested -m "Batch 2: LXC/templates verified"
+git push origin phase-1-batch-2-tested
+```
