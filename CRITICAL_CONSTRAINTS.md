@@ -113,17 +113,20 @@ proxmox_mcp_pve1_create_lxc(
 
 ### 5. NETWORK CONFIGURATION - UNIQUE IP PER VM
 
-**CONSTRAINT:** Each VM must have unique IP on network.
+**CONSTRAINT:** Each VM must have unique IP on network with CORRECT gateway.
 
 **REFERENCE:** vm103 uses 192.168.2.186
 
 **DEPLOYMENT ON pve1 MUST USE:** 192.168.2.187 (or next available)
 
+**CRITICAL:** Gateway MUST be 192.168.2.250 (NOT 192.168.2.1)
+
 **CHECK BEFORE PROCEEDING:**
 ```
 [ ] IP address is unique (not 192.168.2.186)
 [ ] IP is on 192.168.2.0/24 subnet
-[ ] Gateway is 192.168.2.1
+[ ] Gateway is 192.168.2.250 (NOT .1)
+[ ] Cloud-init ipconfig: ip=192.168.2.187/24,gw=192.168.2.250
 [ ] No IP conflicts with existing VMs
 ```
 
@@ -185,9 +188,23 @@ NOTES: __________
 
 **Consequence:** Wasted time, violated requirements, deployment not executable
 
-**Fix:** Deleted LXC, will create QEMU VM instead
+**Fix:** Deleted LXC, created QEMU VM
 
 **Prevention:** This document created to prevent recurrence
+
+---
+
+### Incident 2026-05-28 23:14 UTC
+
+**What happened:** VM 151 created with gateway 192.168.2.1 (incorrect)
+
+**Root cause:** Assumed standard gateway, didn't verify network topology
+
+**Consequence:** VM unreachable, no network connectivity
+
+**Fix:** Deleted VM, recreated with gateway 192.168.2.250, agent=1 enabled
+
+**Prevention:** Gateway value saved in .env for reference; updated CRITICAL_CONSTRAINTS to specify 192.168.2.250 explicitly
 
 ---
 
