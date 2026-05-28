@@ -108,9 +108,33 @@
 
 ---
 
-## Next Steps
+## Execution Strategy
 
-1. Execute Phase 0-1 replay (commit 7c1ae38 onwards)
-2. Deploy, test, snapshot per-batch
-3. Monitor for vCPU/Python 3.12 compatibility issues
-4. Document actual state at Phase 12 (040259b) failure point
+**Git commit structure:** Per-batch (Option C)
+- Each batch of 5-10 commits = 1 commit in cloudforproxmox-new
+- Phase-level summary: ~4-10 commits per phase
+- Total: ~38-42 commits by 2ca9e1b
+- Each commit message: `feat(Phase X-Y): Batch N - deployed commits {hash}...{hash}. All tests passed.`
+
+**Endpoint:** Build to commit 2ca9e1b (working state before HTTPS failure)
+
+**Documents in repo:** ALL (REPLAY_PLAN, OPENCODE_RULES, INFRASTRUCTURE_SAFEGUARDS, etc.) - critical for tracking
+
+## Execution Progress
+
+### Phase 0-1: Setup → VM/LXC Foundation
+**Status:** Starting  
+**Target:** 179 commits, end at be13bb8  
+**Batches planned:** ~18-20
+
+### Phase 2-3: Network → Onboarding
+**Status:** Pending  
+**Target:** 22 commits
+
+### Phase 4-5: Multi-Tenant → RBAC
+**Status:** Pending  
+**Target:** 51 commits
+
+### Phase 8-9: Audit → Billing
+**Status:** Pending  
+**Target:** 40 commits, end at 2ca9e1b
