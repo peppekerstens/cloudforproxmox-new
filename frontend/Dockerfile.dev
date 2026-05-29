@@ -8,10 +8,6 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy entrypoint first and make executable
-COPY entrypoint.sh ./
-RUN chmod +x ./entrypoint.sh
-
 # Copy application code
 COPY . .
 
@@ -21,5 +17,5 @@ EXPOSE 3000
 # Set default API URL (can be overridden at runtime via env vars)
 ENV VITE_API_URL=http://192.168.2.186:8000/api/v1
 
-# Start development server via entrypoint
-ENTRYPOINT ["sh", "./entrypoint.sh"]
+# Start development server directly
+CMD ["npm", "run", "dev"]
