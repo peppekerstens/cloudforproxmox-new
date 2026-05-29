@@ -448,6 +448,32 @@ This document assumes Phase 8 contains:
 
 ---
 
+## DEPLOYMENT RESOLUTION (2026-05-29)
+
+### Issues FIXED During Batch 2 Deployment
+
+✅ **Login Failure** → Fixed timezone bug in auth.py (commit e498925)
+✅ **CORS Blocking** → Fixed indentation in docker-compose.yml (commits 271e62c, 8e8eeec)
+✅ **Frontend Env Var** → Set VITE_API_URL in Dockerfile.dev (commit ff14714)
+✅ **Missing Pages** → Removed non-existent routes from App.tsx (commit dc49ce5)
+✅ **Admin Not Superadmin** → Database update required (documented in ADMIN_SETUP.md)
+✅ **Proxmox Integration** → API token created, clusters registered and synced
+
+**Status:** Deployment WORKING. See `DEPLOYMENT_ISSUES_AND_FIXES.md` for complete log.
+
+### Issues DEFERRED to Phase 8
+
+These are known limitations. Workarounds exist for all:
+
+1. **Firewall operations are stubs** → Use Proxmox UI directly
+2. **Audit trail missing** → Check Proxmox task log instead
+3. **Power state not auto-synced** → Manual refresh button works
+4. **Celery workers disabled** → Phase 1 doesn't need them
+
+These will be fixed in Phase 8 when Phase 8+ modules are available.
+
+---
+
 ## Questions for Phase 1 Users
 
 If you encounter issues, check:
@@ -457,4 +483,4 @@ If you encounter issues, check:
 3. **Power state stale?** → Stub. Click refresh.
 4. **Celery workers crashing?** → Stub modules. Expected.
 
-These will be fixed in Phase 8.
+For deployment errors, see `DEPLOYMENT_ISSUES_AND_FIXES.md`.
