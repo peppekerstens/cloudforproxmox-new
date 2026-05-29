@@ -259,27 +259,29 @@ NOTES: __________
 
 ---
 
-**VM 105 (temporary, vm151 was temp for Batch 1) - TEMPORARY TEST MACHINE**
+**VM 151 (pve1, 192.168.2.196) - TEMPORARY TEST MACHINE**
 
-**CONSTRAINT:** Temporary VMs are ONLY created when you explicitly instruct me to deploy a specific batch for testing on a separate node.
+**CONSTRAINT:** vm151 is the designated temporary VM. I only deploy to vm151 when you explicitly instruct me to test a batch on a separate node/cluster.
 
 **Rules:**
-- ❌ I do NOT create vm105+ without explicit instruction
-- ❌ I do NOT deploy to vm105+ unless you say "deploy to vm105"
-- ✅ Once created, I follow snapshot-based workflow
-- ✅ Once testing complete, I can keep snapshot but can delete VM
-- ❌ Temporary VMs are not for ongoing development
+- ❌ I do NOT deploy to vm151 without explicit instruction
+- ✅ When you say "deploy to temporary VM" or "test on vm151": I clone vm103 → vm151, update code, test
+- ✅ After testing: I create snapshot (e.g., `phase-1-batch-2-final`) for reference
+- ❌ I do NOT use vm151 for ongoing development
+- ✅ After testing, I can reset vm151 or keep for reference
 
-**When temporary VMs are used:**
-1. You say: "Deploy Batch 2 to a temporary VM for testing"
-2. I clone baseline → vm105
+**When vm151 is used:**
+1. You say: "Deploy Batch 2 to temporary VM" or "Test on vm151"
+2. I clone vm103 baseline → vm151
 3. Update code, test, verify
-4. Create snapshot `phase-1-batch-2-final` for reference
-5. Optionally delete vm105 to free resources
-6. Keep snapshot for regression testing
+4. Create snapshot `phase-X-batch-Y-final` for reference
+5. Report results
+6. Keep vm151 available for next test
 
-**Current temporary VMs:**
-- vm151 (pve1, 192.168.2.196) - Phase 1 Batch 1 test (snapshot: `phase-1-batch1-main-branch-working`)
+**Current vm151 Status:**
+- pve1, 192.168.2.196
+- Phase 1 Batch 1 snapshot: `phase-1-batch1-main-branch-working` (from initial test)
+- Used for: Cross-node testing, isolation, parallel verification
 
 ---
 
@@ -288,8 +290,7 @@ NOTES: __________
 | VM | Node | IP | Status | Usage | Snapshots |
 |---|---|---|---|---|---|
 | vm103 | pve2 | 192.168.2.186 | DEFAULT | Dev/test all batches | Keep 3 latest |
-| vm151 | pve1 | 192.168.2.196 | ARCHIVED | Batch 1 test (kept for reference) | 1 (final) |
-| vm105+ | varies | varies | TEMPORARY | Only when you say "deploy" | Delete after test or keep 1 |
+| vm151 | pve1 | 192.168.2.196 | TEMPORARY | Only when you say "test on vm151" | 1 per batch test |
 
 **REFERENCE:** VM_USAGE_POLICY.md (new document)
 

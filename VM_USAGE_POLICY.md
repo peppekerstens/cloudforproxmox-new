@@ -11,7 +11,7 @@
 | VM | Role | Who Can Use | When | Snapshots |
 |---|---|---|---|---|
 | **vm103** | Default dev | Me (without asking) | Anytime for testing | Keep 3 latest |
-| **vm105+** | Temporary test | Me (only if instructed) | Only when you say "deploy" | Delete after test |
+| **vm151** | Temporary test | Me (only if instructed) | Only when you say "test on vm151" | 1 per batch |
 
 ---
 
@@ -79,48 +79,48 @@ Delete older snapshots to save space.
 
 ---
 
-## VM 105+ (Temporary): ONLY WHEN INSTRUCTED
+## VM 151: TEMPORARY TEST MACHINE - ONLY WHEN INSTRUCTED
 
-**Location:** pve1 or pve2 (varies)  
-**Status:** Created on demand, deleted after testing  
-**Purpose:** Isolated test environment for specific batch verification
+**Location:** pve1, 192.168.2.196  
+**Status:** Available for testing when you instruct  
+**Purpose:** Isolated test environment on separate cluster for parallel verification
 
-### When Can I Create vm105+?
+### When Can I Use vm151?
 
 **ONLY when you say:**
-- "Deploy Batch 2 to a temporary VM"
-- "Test Batch 3 on vm105"
-- "Create vm105 for parallel testing"
+- "Deploy Batch 2 to temporary VM"
+- "Test Batch 3 on vm151"
+- "Verify on vm151"
+- Any instruction that explicitly mentions testing on a separate node
 
 **NOT when:**
 - You haven't explicitly instructed it
 - You said "deploy" without specifying temporary
-- Default is vm103, not temporary VMs
+- Default assumption is vm103, not vm151
 
-### Standard Workflow for Temporary VMs
+### Standard Workflow for vm151
 
-1. You say: "Deploy Batch 2 to temporary VM for testing"
-2. I clone vm103 snapshot → vm105
+1. You say: "Deploy Batch 2 to temporary VM" or "Test on vm151"
+2. I clone vm103 snapshot → vm151 (on pve1)
 3. I update code: `git checkout phase-1-batch-2`
 4. I test: login, endpoints, new features
-5. I create snapshot: `qm snapshot 105 phase-1-batch-2-final`
+5. I create snapshot: `qm snapshot 151 phase-1-batch-2-final`
 6. I report results
-7. You decide: delete vm105 or keep for reference
+7. vm151 stays available for next test
 
 ### After Testing
 
-**Option A: Delete Temporary VM**
+**Option A: Keep vm151 for Next Batch**
 ```bash
-# Snapshot is kept for regression testing
-qm destroy 105
-# Space freed, snapshot remains for reference
+# Keep running with current batch code
+# Next test: clone again or update code
+qm status 151  # Verify still running
 ```
 
-**Option B: Keep for Reference**
+**Option B: Reset vm151 to Baseline**
 ```bash
-# Keep vm105 as-is
-# Next batch: either redeploy to vm105 or create vm106
-qm snapshot 105 phase-1-batch-2-final
+# Restore to vm103 snapshot for clean state
+qm snapshot rollback 151 phase-1-batch-1-final
 ```
 
 ---
@@ -131,13 +131,8 @@ qm snapshot 105 phase-1-batch-2-final
 
 | VM | Node | IP | Branch | Snapshot | Status |
 |---|---|---|---|---|---|
-| 103 | pve2 | 192.168.2.186 | main | phase-1-batch-1-final | ✅ DEFAULT |
-
-### Archived/Reference
-
-| VM | Node | IP | Branch | Snapshot | Status |
-|---|---|---|---|---|---|
-| 151 | pve1 | 192.168.2.196 | main | phase-1-batch1-main-branch-working | ✅ Batch 1 test proof |
+| 103 | pve2 | 192.168.2.186 | main | phase-1-batch-1-final | ✅ DEFAULT dev |
+| 151 | pve1 | 192.168.2.196 | main | phase-1-batch1-main-branch-working | ✅ TEMPORARY test |
 
 ---
 
@@ -145,16 +140,16 @@ qm snapshot 105 phase-1-batch-2-final
 
 ### Violation: Attempting to Deploy Without Instruction
 
-**Scenario:** You haven't said to deploy, but I attempt to create vm105.
+**Scenario:** You haven't said to test on temporary VM, but I deploy to vm151 without asking.
 
 **Result:** I STOP and ask for confirmation.
 
 **Example:**
 ```
 You: "What's next?"
-Me: "Ready to deploy Batch 2 to temporary VM (vm105)?"
-You: "No, deploy to vm103 instead"
-Me: "Understood, using vm103 (default dev). Cloning..."
+Me: "Ready to deploy Batch 2 to vm103 (default)?"
+You: "Test on vm151 instead"
+Me: "Understood, cloning vm103 → vm151..."
 ```
 
 ### Violation: Destroying vm103
@@ -165,6 +160,14 @@ Me: "Understood, using vm103 (default dev). Cloning..."
 
 **Prevention:** All destruction commands require explicit instruction from you.
 
+### Violation: Using vm151 Without Instruction
+
+**Scenario:** I deploy to vm151 without you explicitly saying "test on vm151".
+
+**Result:** I STOP and ask for clarification.
+
+**Rule:** Default is always vm103. vm151 ONLY on explicit instruction.
+
 ---
 
 ## Snapshot Naming Convention
@@ -172,7 +175,7 @@ Me: "Understood, using vm103 (default dev). Cloning..."
 ### vm103 (Default Dev) Snapshots
 
 ```
-phase-1-batch-<N>-verified
+phase-<PHASE>-batch-<N>-verified
 ```
 
 Examples:
@@ -180,19 +183,20 @@ Examples:
 - `phase-1-batch-2-verified` - Batch 2 tested on vm103
 - `phase-1-batch-3-verified` - Batch 3 tested on vm103
 
-Keep last 3, delete older.
+Policy: Keep last 3, delete older.
 
-### Temporary VM Snapshots
+### vm151 (Temporary Test) Snapshots
 
 ```
-phase-1-batch-<N>-final
+phase-<PHASE>-batch-<N>-final
 ```
 
 Examples:
-- `phase-1-batch-2-final` (vm105) - Batch 2 parallel test
-- `phase-1-batch-3-final` (vm106) - Batch 3 parallel test
+- `phase-1-batch-2-final` (vm151) - Batch 2 parallel test
+- `phase-1-batch-3-final` (vm151) - Batch 3 parallel test (replaces previous)
+- `phase-2-batch-1-final` (vm151) - Phase 2 Batch 1 test
 
-Delete VM after test, keep snapshot for 2 weeks for regression testing.
+Policy: Keep 1 current snapshot per batch, overwrite with next batch test.
 
 ---
 
@@ -200,19 +204,22 @@ Delete VM after test, keep snapshot for 2 weeks for regression testing.
 
 ```
 User says "Deploy Batch 2":
-├─ Do you say "to temporary VM"?
-│  ├─ YES → Create vm105, clone from vm103, deploy, test, snapshot, keep for reference
-│  └─ NO → Use vm103 (default), deploy, test, snapshot, clean up old snapshots
+├─ Default assumption: Use vm103
+│  └─ Update code, test, snapshot, keep working state
+│
+User says "Test on vm151":
+├─ Clone vm103 → vm151
+├─ Update code, test, snapshot phase-1-batch-2-final
+└─ Report results, vm151 ready for next test
 │
 User says "What's the status?":
-├─ I check vm103 (main dev machine)
-├─ I report: which branch, which snapshot, container health
+├─ Check vm103 (main dev machine)
+├─ Report: which branch, which snapshot, container health
 └─ vm103 always ready for next batch
 
-User says "Delete vm105":
-├─ I delete vm105
-├─ I keep snapshot phase-1-batch-2-final for reference
-└─ Freed space available
+User says "Reset vm151":
+├─ Restore vm151 to baseline (phase-1-batch-1-final)
+└─ vm151 ready for next test
 ```
 
 ---

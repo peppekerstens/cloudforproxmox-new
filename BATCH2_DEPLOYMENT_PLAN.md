@@ -3,13 +3,13 @@
 **Status:** Ready for deployment  
 **Date:** 2026-05-29  
 **Default Target:** vm103 on pve2 (192.168.2.186) - DEFAULT DEV MACHINE  
-**Temporary Target:** vm105+ (only if you instruct "deploy to temporary VM")  
+**Temporary Target:** vm151 on pve1 (192.168.2.196) - TEMPORARY TEST MACHINE  
 **Branch:** `cloudforproxmox-new/phase-1-batch-2`  
 **Deployment Method:** Code update on existing working baseline
 
 **VM USAGE RULES:**
 - ✅ vm103 is my DEFAULT dev machine (deploy there without asking)
-- ❌ vm105+ are TEMPORARY (only deploy there if you explicitly say so)
+- ❌ vm151 is TEMPORARY (only deploy there if you explicitly say "test on vm151")
 
 See VM_USAGE_POLICY.md for details.
 
@@ -61,18 +61,17 @@ docker-compose logs -f api
 
 ---
 
-### Scenario B: Deploy to Temporary VM (vm105+)
+### Scenario B: Deploy to Temporary VM (vm151)
 
-**When:** You explicitly say "deploy to temporary VM" or "deploy to vm105"  
-**What I do:** Clone vm103 → vm105, update code, snapshot as `phase-1-batch-2-final`
+**When:** You explicitly say "test on temporary VM" or "deploy to vm151"  
+**What I do:** Clone vm103 → vm151, update code, snapshot as `phase-1-batch-2-final`
 
 ```bash
-# Step 1: Clone vm103 snapshot (on pve2)
-qm clone 103 105 --name cloud-platform-batch2-test --full
-qm start 105
+# Step 1: Clone vm103 snapshot (on pve1)
+qm clone 103 151 --name cloud-platform-batch2-temp --full
 
-# Step 2: SSH to vm105 and wait for network
-ssh ubuntu@192.168.2.187  # (check actual IP from qm status)
+# Step 2: SSH to vm151
+ssh ubuntu@192.168.2.196  # vm151 IP
 
 # Step 3: Update code
 cd ~/cloud-platform-upstream
@@ -85,7 +84,7 @@ docker-compose up -d
 docker-compose logs -f api
 ```
 
-**Snapshot location:** `phase-1-batch-2-final` on vm105
+**Snapshot location:** `phase-1-batch-2-final` on vm151
 
 ---
 
@@ -125,13 +124,12 @@ qm listsnapshot 103
 qm snapshot delete 103 <old_snapshot_name>
 ```
 
-**If on temporary VM (vm105+):**
+**If on temporary VM (vm151):**
 ```bash
-# On pve2
-qm snapshot 105 phase-1-batch-2-final -d "Phase 1 Batch 2 tested on vm105, LXC + templates + cluster pages"
+# On pve1
+qm snapshot 151 phase-1-batch-2-final -d "Phase 1 Batch 2 tested on vm151, LXC + templates + cluster pages"
 
-# Optional: Delete VM to free space (snapshot kept)
-qm destroy 105
+# vm151 stays available for next test (no deletion needed)
 ```
 
 ---
@@ -152,10 +150,11 @@ qm snapshot rollback 103 phase-1-batch-1-final
 docker-compose restart
 ```
 
-**Option 3: Delete temporary VM**
+**Option 3: Reset vm151 for next test**
 ```bash
-qm destroy 105
-# Snapshot phase-1-batch-2-final kept for reference
+# Restore vm151 to baseline (clean state)
+qm snapshot rollback 151 phase-1-batch-1-final
+# vm151 ready for next batch test
 ```
 
 ---
@@ -164,12 +163,13 @@ qm destroy 105
 
 - [x] phase-1-batch-2 branch created & merged to main
 - [x] 10 commits applied to code
-- [ ] Deployed to vm103 (default) OR temporary VM (if instructed) ← **Awaiting instruction**
+- [ ] Deployed to vm103 (default) ← **Default behavior**
+- [ ] OR deployed to vm151 (if you say "test on vm151")
 - [ ] 8/8 containers healthy
 - [ ] Login endpoint works
 - [ ] Dashboard loads
 - [ ] Batch 2 features testable (LXC, templates, cluster pages)
-- [ ] Snapshot created (`phase-1-batch-2-verified` or `phase-1-batch-2-final`)
+- [ ] Snapshot created (`phase-1-batch-2-verified` on vm103 or `phase-1-batch-2-final` on vm151)
 
 ---
 

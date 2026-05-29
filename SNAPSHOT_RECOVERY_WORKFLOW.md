@@ -32,11 +32,11 @@
 | VM | Node | IP | Role | Snapshot | Status |
 |---|---|---|---|---|---|
 | **vm103** | pve2 | 192.168.2.186 | **DEFAULT dev machine** | phase-1-batch-1-final | ✅ Active |
-| vm151 | pve1 | 192.168.2.196 | Batch 1 test reference | phase-1-batch1-main-branch-working | ✅ Archived |
+| **vm151** | pve1 | 192.168.2.196 | **TEMPORARY test machine** | phase-1-batch1-main-branch-working | ✅ Available |
 
-**vm103 is your default development machine.** I clone from vm103 for every batch deployment. It stays in working state at all times.
+**vm103 is your default development machine.** I deploy to vm103 for all batch testing. It stays in working state at all times.
 
-**vm151+ are temporary test machines,** only used when you explicitly instruct parallel testing.
+**vm151 is the temporary test machine,** only used when you explicitly say "test on vm151" for parallel verification or cross-node testing.
 
 See VM_USAGE_POLICY.md for detailed rules.
 
