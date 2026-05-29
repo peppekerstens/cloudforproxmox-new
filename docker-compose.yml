@@ -57,7 +57,7 @@ services:
       timeout: 10s
       retries: 5
     networks:
-      - cloudplatform-network
+       - cloudplatform-network
 
    # Backend API
    api:
@@ -66,8 +66,8 @@ services:
        dockerfile: Dockerfile
      container_name: cloudplatform-api
      command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-    volumes:
-      - ./backend:/app
+     volumes:
+       - ./backend:/app
     ports:
       - "8000:8000"
     environment:
