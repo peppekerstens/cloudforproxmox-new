@@ -8,12 +8,12 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
+# Copy entrypoint first and make executable
+COPY entrypoint.sh ./
+RUN chmod +x ./entrypoint.sh
+
 # Copy application code
 COPY . .
-COPY entrypoint.sh ./
-
-# Make entrypoint executable
-RUN chmod +x ./entrypoint.sh
 
 # Expose port
 EXPOSE 3000
