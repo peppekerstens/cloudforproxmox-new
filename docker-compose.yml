@@ -159,17 +159,17 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.dev
     container_name: cloudplatform-frontend
-    volumes:
-    - ./frontend:/app
-    - /app/node_modules
+     volumes:
+     - ./frontend:/app
+     - /app/node_modules
      ports:
      - 3000:3000
      environment:
      - VITE_API_URL=http://192.168.2.186:8000/api/v1
      depends_on:
-    - api
-    networks:
-    - cloudplatform-network
+     - api
+     networks:
+     - cloudplatform-network
 volumes:
   postgres_data:
     driver: local
