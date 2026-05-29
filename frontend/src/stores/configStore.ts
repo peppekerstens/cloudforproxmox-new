@@ -12,6 +12,6 @@ interface ConfigStore {
 }
 
 export const useConfigStore = create<ConfigStore>((set) => ({
-  apiUrl: process.env.VITE_API_URL || 'http://localhost:8000/api/v1',
+  apiUrl: import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1',
   setApiUrl: (url: string) => set({ apiUrl: url }),
 }));
