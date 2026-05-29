@@ -164,8 +164,6 @@ services:
     - /app/node_modules
     ports:
     - 3000:3000
-    environment:
-    - VITE_API_URL=http://192.168.2.186:8000/api/v1
     depends_on:
     - api
     networks:
