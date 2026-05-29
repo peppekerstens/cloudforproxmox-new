@@ -2,9 +2,16 @@
 
 **Status:** Ready for deployment  
 **Date:** 2026-05-29  
-**Target:** vm152 on pve2 (192.168.2.187)  
+**Default Target:** vm103 on pve2 (192.168.2.186) - DEFAULT DEV MACHINE  
+**Temporary Target:** vm105+ (only if you instruct "deploy to temporary VM")  
 **Branch:** `cloudforproxmox-new/phase-1-batch-2`  
-**Deployment Method:** Clone from Batch 1 working snapshot + code update
+**Deployment Method:** Code update on existing working baseline
+
+**VM USAGE RULES:**
+- ✅ vm103 is my DEFAULT dev machine (deploy there without asking)
+- ❌ vm105+ are TEMPORARY (only deploy there if you explicitly say so)
+
+See VM_USAGE_POLICY.md for details.
 
 ---
 
@@ -13,96 +20,143 @@
 Full VM deployments are complex and error-prone. **New strategy:** Use existing working VMs and their snapshots as baselines.
 
 **Available Baselines:**
-- **vm103** (pve2): Phase 1 Batch 1 working snapshot `phase-1-batch-1-final`
-- **vm151** (pve1): Phase 1 Batch 1 working snapshot `phase-1-batch1-main-branch-working`
+- **vm103** (pve2, 192.168.2.186): Phase 1 Batch 1 working snapshot `phase-1-batch-1-final` ← **DEFAULT**
+- **vm151** (pve1, 192.168.2.196): Phase 1 Batch 1 working snapshot `phase-1-batch1-main-branch-working`
 
 **Process:**
-1. Clone vm103 snapshot → vm152 (copies all state: OS, Docker, DB, credentials)
-2. Update code: `git checkout phase-1-batch-2`
-3. Run DB migrations if needed
-4. Test
+1. Update code: `git checkout phase-1-batch-2` (on vm103 or clone to temporary)
+2. Restart containers: `docker-compose restart`
+3. Test & verify (2-3 min)
+4. Create snapshot (1 min)
 
 This avoids 30-45 min of Ubuntu install + Docker setup + credential copy.
 
 ---
 
-## Deployment (When Instructed)
+## Deployment Scenarios (When Instructed)
 
-### Step 1: Clone vm103 Snapshot to vm152
+### Scenario A: Deploy to Default VM (vm103)
 
-```bash
-# On pve2 console
-qm clone 103 152 --name cloud-platform-batch2 --full
-
-# Or restore from snapshot:
-qm snapshot rollback 103 phase-1-batch-1-final
-qm clone 103 152 --name cloud-platform-batch2 --full
-
-# Start vm152
-qm start 152
-```
-
-### Step 2: Update Code to Batch 2
+**When:** Default behavior, OR you say "deploy to vm103"  
+**What I do:** Update code in-place on vm103, snapshot as `phase-1-batch-2-verified`
 
 ```bash
-# SSH to vm152 (will have IP 192.168.2.187 from cloned config)
-ssh ubuntu@192.168.2.187
+# SSH to vm103
+ssh ubuntu@192.168.2.186
 
 # Update code
-cd ~/cloud-platform-upstream  # (or ~/cloud-platform-batch2 if path differs)
-git remote set-url origin https://github.com/peppekerstens/cloudforproxmox-new.git
+cd ~/cloud-platform-upstream
 git fetch origin
 git checkout phase-1-batch-2
 
-# Restart containers with new code
+# Restart containers
+docker-compose down
+docker-compose up -d
+docker-compose logs -f api
+
+# Wait for containers to start (~2 min)
+```
+
+**Snapshot location:** `phase-1-batch-2-verified` on vm103
+
+---
+
+### Scenario B: Deploy to Temporary VM (vm105+)
+
+**When:** You explicitly say "deploy to temporary VM" or "deploy to vm105"  
+**What I do:** Clone vm103 → vm105, update code, snapshot as `phase-1-batch-2-final`
+
+```bash
+# Step 1: Clone vm103 snapshot (on pve2)
+qm clone 103 105 --name cloud-platform-batch2-test --full
+qm start 105
+
+# Step 2: SSH to vm105 and wait for network
+ssh ubuntu@192.168.2.187  # (check actual IP from qm status)
+
+# Step 3: Update code
+cd ~/cloud-platform-upstream
+git fetch origin
+git checkout phase-1-batch-2
+
+# Step 4: Restart containers
 docker-compose down
 docker-compose up -d
 docker-compose logs -f api
 ```
 
-### Step 3: Monitor Container Health
+**Snapshot location:** `phase-1-batch-2-final` on vm105
+
+---
+
+## Post-Deployment Verification (Both Scenarios)
 
 ```bash
-# Wait for migrations + startup (~2 min)
+# Check container health
 docker ps --format "table {{.Names}}\t{{.Status}}"
+# Expected: 8/8 running (postgres, redis, rabbitmq, api, frontend, celery-beat, flower, celery-worker)
 
-# Should show 8/8 containers running (postgres, redis, rabbitmq, api, frontend, celery-beat, flower, celery-worker)
-
-# Check API logs for errors
-docker logs cloud-platform-api
-```
-
-### Step 4: Quick Smoke Test
-
-```bash
-# Login endpoint
-curl -X POST http://192.168.2.187:8000/api/v1/auth/login \
+# Test login endpoint
+curl -X POST http://192.168.2.186:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.org","password":"superadmin"}'
-
 # Expected: {"access_token": "...", "token_type": "bearer"}
 
-# Dashboard
-curl -s http://192.168.2.187:3000/ | grep -q "<title>" && echo "✅ GUI loads"
+# Test GUI loads
+curl -s http://192.168.2.186:3000/ | grep -q "<title>" && echo "✅ GUI loads"
 
-# Test Batch 2 LXC feature (if API endpoint exists)
-curl http://192.168.2.187:8000/api/v1/vms/lxc || echo "LXC endpoint not yet available"
-```
-
-### Step 5: Create Snapshot
-
-```bash
-# On pve2
-qm snapshot 152 phase-1-batch-2-final -d "Phase 1 Batch 2 verified, LXC + templates + cluster pages"
+# Test Batch 2 LXC endpoint (if available)
+curl http://192.168.2.186:8000/api/v1/vms/lxc 2>/dev/null || echo "LXC endpoint not available yet"
 ```
 
 ---
 
-## Recovery Plan
+## Snapshot Creation
 
-If Batch 2 fails during code update:
-1. **Quick rollback:** `git checkout phase-1-batch-1` + `docker-compose restart`
-2. **Full rollback:** `qm destroy 152` (keep snapshot `phase-1-batch-1-final` for next attempt)
+**After successful deployment:**
+
+**If on vm103:**
+```bash
+# On pve2
+qm snapshot 103 phase-1-batch-2-verified -d "Phase 1 Batch 2 verified on vm103, LXC + templates + cluster pages"
+
+# Clean up old snapshots (keep 3)
+qm listsnapshot 103
+qm snapshot delete 103 <old_snapshot_name>
+```
+
+**If on temporary VM (vm105+):**
+```bash
+# On pve2
+qm snapshot 105 phase-1-batch-2-final -d "Phase 1 Batch 2 tested on vm105, LXC + templates + cluster pages"
+
+# Optional: Delete VM to free space (snapshot kept)
+qm destroy 105
+```
+
+---
+
+## Rollback Plan
+
+If Batch 2 fails:
+
+**Option 1: Quick git rollback (on vm103)**
+```bash
+git checkout phase-1-batch-1
+docker-compose restart
+```
+
+**Option 2: Restore from snapshot (on vm103)**
+```bash
+qm snapshot rollback 103 phase-1-batch-1-final
+docker-compose restart
+```
+
+**Option 3: Delete temporary VM**
+```bash
+qm destroy 105
+# Snapshot phase-1-batch-2-final kept for reference
+```
 
 ---
 
@@ -110,18 +164,29 @@ If Batch 2 fails during code update:
 
 - [x] phase-1-batch-2 branch created & merged to main
 - [x] 10 commits applied to code
-- [ ] vm152 cloned from vm103 snapshot ← **Do this when instructed**
-- [ ] Batch 2 code deployed (git checkout)
+- [ ] Deployed to vm103 (default) OR temporary VM (if instructed) ← **Awaiting instruction**
 - [ ] 8/8 containers healthy
 - [ ] Login endpoint works
 - [ ] Dashboard loads
-- [ ] snapshot `phase-1-batch-2-final` created
+- [ ] Batch 2 features testable (LXC, templates, cluster pages)
+- [ ] Snapshot created (`phase-1-batch-2-verified` or `phase-1-batch-2-final`)
 
 ---
 
-## Why This Approach
+## Key Differences from Batch 1
 
-1. **Speed:** Clone + code update takes ~5 min vs 30+ min full install
-2. **Reliability:** Known-good DB state, Docker config already correct
-3. **Easy rollback:** Snapshot recovery faster than troubleshooting
-4. **Consistency:** Every Batch starts from proven Batch 1 baseline
+| Aspect | Batch 1 | Batch 2+ |
+|--------|---------|----------|
+| Deployment | Manual (full OS install) | Code update only |
+| Time | 30-45 min | 5 min |
+| Baseline | Created from scratch | Cloned from working vm103 |
+| Complexity | High (many manual steps) | Low (2-3 commands) |
+| Error recovery | Slow (30+ min to retry) | Fast (1 min to rollback) |
+
+---
+
+## Related Documents
+
+- VM_USAGE_POLICY.md - VM roles and rules
+- CRITICAL_CONSTRAINTS.md - Constraint #6 (deployment method) & #7 (VM usage)
+- SNAPSHOT_RECOVERY_WORKFLOW.md - Complete snapshot procedure

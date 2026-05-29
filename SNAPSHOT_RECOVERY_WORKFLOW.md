@@ -29,12 +29,16 @@
 
 ## Available Baselines
 
-| VM | Node | IP | Snapshot | Status | Branch |
+| VM | Node | IP | Role | Snapshot | Status |
 |---|---|---|---|---|---|
-| vm103 | pve2 | 192.168.2.186 | phase-1-batch-1-final | ✅ Working | phase-1-batch-1 |
-| vm151 | pve1 | 192.168.2.196 | phase-1-batch1-main-branch-working | ✅ Working | main |
+| **vm103** | pve2 | 192.168.2.186 | **DEFAULT dev machine** | phase-1-batch-1-final | ✅ Active |
+| vm151 | pve1 | 192.168.2.196 | Batch 1 test reference | phase-1-batch1-main-branch-working | ✅ Archived |
 
-Both baselines are **production-ready, fully tested, and have all fixes applied.**
+**vm103 is your default development machine.** I clone from vm103 for every batch deployment. It stays in working state at all times.
+
+**vm151+ are temporary test machines,** only used when you explicitly instruct parallel testing.
+
+See VM_USAGE_POLICY.md for detailed rules.
 
 ---
 

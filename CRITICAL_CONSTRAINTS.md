@@ -235,6 +235,66 @@ NOTES: __________
 
 ---
 
+### 7. VM USAGE POLICY - DEFAULT vs TEMPORARY (New as of 2026-05-29)
+
+**VM 103 (pve2, 192.168.2.186) - DEFAULT DEV MACHINE**
+
+**CONSTRAINT:** vm103 is your default development machine. I can use it for testing, code updates, and quick development work WITHOUT asking.
+
+**Rules:**
+- ✅ I may deploy new code to vm103 (update branch, test)
+- ✅ I may create snapshots of vm103 for reference
+- ✅ I may run quick tests on vm103
+- ❌ I must NOT destroy vm103
+- ❌ I must NOT break vm103 permanently
+- ✅ If vm103 breaks, I restore from latest snapshot
+
+**When vm103 is used:**
+1. Code is deployed to vm103 to test new batch
+2. If test passes → create snapshot (e.g., `phase-1-batch-2-verified`)
+3. If test fails → rollback to previous snapshot
+4. Keep vm103 in working state for next batch
+
+**Snapshot retention on vm103:** Keep last 3 (current + previous 2 batches), delete older.
+
+---
+
+**VM 105 (temporary, vm151 was temp for Batch 1) - TEMPORARY TEST MACHINE**
+
+**CONSTRAINT:** Temporary VMs are ONLY created when you explicitly instruct me to deploy a specific batch for testing on a separate node.
+
+**Rules:**
+- ❌ I do NOT create vm105+ without explicit instruction
+- ❌ I do NOT deploy to vm105+ unless you say "deploy to vm105"
+- ✅ Once created, I follow snapshot-based workflow
+- ✅ Once testing complete, I can keep snapshot but can delete VM
+- ❌ Temporary VMs are not for ongoing development
+
+**When temporary VMs are used:**
+1. You say: "Deploy Batch 2 to a temporary VM for testing"
+2. I clone baseline → vm105
+3. Update code, test, verify
+4. Create snapshot `phase-1-batch-2-final` for reference
+5. Optionally delete vm105 to free resources
+6. Keep snapshot for regression testing
+
+**Current temporary VMs:**
+- vm151 (pve1, 192.168.2.196) - Phase 1 Batch 1 test (snapshot: `phase-1-batch1-main-branch-working`)
+
+---
+
+**SUMMARY TABLE**
+
+| VM | Node | IP | Status | Usage | Snapshots |
+|---|---|---|---|---|---|
+| vm103 | pve2 | 192.168.2.186 | DEFAULT | Dev/test all batches | Keep 3 latest |
+| vm151 | pve1 | 192.168.2.196 | ARCHIVED | Batch 1 test (kept for reference) | 1 (final) |
+| vm105+ | varies | varies | TEMPORARY | Only when you say "deploy" | Delete after test or keep 1 |
+
+**REFERENCE:** VM_USAGE_POLICY.md (new document)
+
+---
+
 ## 🛑 IF VIOLATING CONSTRAINT
 
 If constraints are about to be violated:
