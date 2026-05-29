@@ -1,7 +1,7 @@
 """
 ISO Image management endpoints for uploading, listing, and managing ISO files.
 """
-from typing import List, Optional
+from typing import Optional
 from pathlib import Path
 import hashlib
 import uuid
@@ -17,6 +17,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, func
+from kombu.exceptions import OperationalError as KombuOperationalError
 
 from app.db.session import get_db
 from app.models.iso_image import ISOImage
@@ -156,9 +157,9 @@ async def upload_iso(
         await db.commit()
         await db.refresh(iso_image)
 
-        # TODO: Queue background task to transfer ISO to Proxmox
-        # from app.tasks.iso_tasks import transfer_iso_to_proxmox
-        # transfer_iso_to_proxmox.delay(iso_id)
+        # Queue background task to transfer ISO to Proxmox
+        from app.tasks.iso_tasks import transfer_iso_to_proxmox
+        transfer_iso_to_proxmox.delay(iso_id)
 
         return ISOUploadInitResponse(
             id=iso_id,
@@ -169,6 +170,20 @@ async def upload_iso(
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
+    except ImportError as e:
+        if local_path.exists():
+            local_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task unavailable"
+        )
+    except (KombuOperationalError, ConnectionError, OSError) as e:
+        if local_path.exists():
+            local_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Task queue unavailable"
+        )
     except Exception as e:
         # Clean up file on error
         if local_path.exists():
@@ -251,9 +266,19 @@ async def upload_iso_from_url(
         return ISOUploadInitResponse(
             id=iso_id,
             upload_url=None,
-            message=f"ISO download from URL initiated. Proxmox is fetching the file in background."
+            message="ISO download from URL initiated. Proxmox is fetching the file in background."
         )
 
+    except ImportError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task unavailable"
+        )
+    except (KombuOperationalError, ConnectionError, OSError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Task queue unavailable"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -285,7 +310,7 @@ async def list_isos(
         conditions.append(
             or_(
                 ISOImage.organization_id == org_context.org_id,
-                ISOImage.is_public == True
+                ISOImage.is_public.is_(True)
             )
         )
     else:
@@ -436,12 +461,17 @@ async def delete_iso(
         )
 
     # Soft delete
-    from datetime import datetime
-    iso.deleted_at = datetime.utcnow()
+    from datetime import datetime, timezone
+    iso.deleted_at = datetime.now(timezone.utc)
 
-    # TODO: Queue background task to clean up ISO from Proxmox and local storage
-    # from app.tasks.iso_tasks import cleanup_iso_storage
-    # cleanup_iso_storage.delay(iso_id)
+    # Queue background task to clean up ISO from Proxmox and local storage
+    try:
+        from app.tasks.iso_tasks import cleanup_iso_storage
+        cleanup_iso_storage.delay(iso_id)
+    except ImportError:
+        pass  # soft-delete still succeeds
+    except (KombuOperationalError, ConnectionError, OSError):
+        pass  # soft-delete still succeeds; cleanup will retry
 
     await db.commit()
 

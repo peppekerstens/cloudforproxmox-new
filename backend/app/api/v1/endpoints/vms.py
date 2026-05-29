@@ -2,18 +2,18 @@
 Virtual Machine management endpoints.
 """
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Response
-from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, and_
+from sqlalchemy.orm import joinedload, raiseload
+from kombu.exceptions import OperationalError as KombuOperationalError
 
 logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
-from app.models.user import User
 from app.models.virtual_machine import VirtualMachine
 from app.models.proxmox_cluster import ProxmoxCluster
 from app.models.vm_disk import VMDisk
@@ -24,15 +24,88 @@ from app.schemas.virtual_machine import (
     VMResponse,
     VMListResponse,
     VMActionRequest,
-    VMStatsResponse,
     VMResize,
+    VMTemplateCreate,
+    VMCloneRequest,
 )
-from app.core.deps import get_current_user, get_organization_context, OrgContext, RequirePermission
+from app.schemas.network import VMNetworkAttachRequest
+from app.core.audit import create_audit_log
+from app.models.audit_log import AuditAction
+from app.core.deps import OrgContext, RequirePermission
 from app.core.rbac import Role, Permission
 from app.services.proxmox_service import ProxmoxService
 from app.services.quota_service import QuotaService
+from app.tasks.vm_status_tasks import poll_vm_power_state
 
 router = APIRouter(prefix="/vms", tags=["Virtual Machines"])
+
+
+def _get_dns_provider_for_endpoint():
+    """Get DNS provider instance for endpoint operations."""
+    from app.core.config import settings
+    if not settings.DNS_ENABLED:
+        return None
+    # Import provider registry lazily
+    try:
+        from app.services.dns_adguard import AdGuardHomeProvider
+        if settings.DNS_PROVIDER == "adguard":
+            return AdGuardHomeProvider.from_settings()
+    except ImportError:
+        pass
+    return None
+
+
+def _get_dns_provider_sync():
+    """Get DNS provider for sync operations (Celery tasks, no async DB).
+
+    Reads config from DB using a sync session if available, falls back to env vars.
+    """
+    from app.core.config import settings
+    if not settings.DNS_ENABLED:
+        return None
+    try:
+        from app.services.dns_adguard import AdGuardHomeProvider, AdGuardConfig
+        from app.db.session import SessionLocal
+        from app.models.dns_config import DNSConfig
+        from sqlalchemy import select
+
+        provider_name = settings.DNS_PROVIDER
+        connection_config = None
+
+        try:
+            db = SessionLocal()
+            query = select(DNSConfig).where(
+                DNSConfig.deleted_at.is_(None),
+                DNSConfig.is_active.is_(True),
+            )
+            result = db.execute(query)
+            db_config = result.scalar_one_or_none()
+            if db_config and db_config.enabled:
+                provider_name = db_config.provider_name
+                connection_config = db_config.connection_config
+        except Exception as e:
+            logger.warning(f"Failed to load DNS config from DB: {e}")
+        finally:
+            try:
+                db.close()
+            except Exception as e:
+                logger.debug(f"Error closing DB session: {e}")
+
+        if connection_config and provider_name == "adguard":
+            config = AdGuardConfig(
+                host=connection_config.get("host", settings.ADGUARD_HOST),
+                port=connection_config.get("port", settings.ADGUARD_PORT),
+                username=connection_config.get("username", settings.ADGUARD_USERNAME),
+                password=connection_config.get("password", settings.ADGUARD_PASSWORD),
+                use_tls=connection_config.get("use_tls", settings.ADGUARD_USE_TLS),
+                verify_ssl=connection_config.get("verify_ssl", settings.ADGUARD_VERIFY_SSL),
+            )
+            return AdGuardHomeProvider(config)
+        elif provider_name == "adguard":
+            return AdGuardHomeProvider.from_settings()
+    except ImportError:
+        pass
+    return None
 
 
 def map_ostype_to_proxmox(ostype: Optional[str]) -> str:
@@ -79,27 +152,13 @@ def map_ostype_to_proxmox(ostype: Optional[str]) -> str:
     return ostype_map.get(ostype.lower(), "l26")
 
 
-async def provision_vm_task(
-    vm_id: str,
-    cluster_id: str,
-    vm_data: dict,
-    db_url: str
-):
-    """
-    Background task to provision VM on Proxmox.
-    In production, this should be a Celery task.
-    """
-    # This is a placeholder for async VM provisioning
-    # In production, implement as Celery task
-    pass
-
-
 @router.get("", response_model=VMListResponse)
 async def list_vms(
     page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=500),
+    per_page: int = Query(20, ge=1, le=100),
     status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search by name"),
+    node: Optional[str] = Query(None, description="Filter by Proxmox node"),
     org_context: OrgContext = Depends(RequirePermission(Permission.VM_READ)),
     db: AsyncSession = Depends(get_db)
 ) -> dict:
@@ -112,10 +171,18 @@ async def list_vms(
 
     Requires: VM_READ permission
     """
+    per_page = min(per_page, 100)
+
     # Build query - filter by organization
-    query = select(VirtualMachine).where(
+    query = select(VirtualMachine).options(
+        joinedload(VirtualMachine.disks),
+        joinedload(VirtualMachine.proxmox_cluster),
+        joinedload(VirtualMachine.owner),
+        raiseload(VirtualMachine.network_interfaces),
+    ).where(
         VirtualMachine.organization_id == org_context.org_id,
-        VirtualMachine.deleted_at.is_(None)
+        VirtualMachine.deleted_at.is_(None),
+        VirtualMachine.is_template.is_(False)
     )
 
     # Members only see their own VMs
@@ -129,6 +196,9 @@ async def list_vms(
     if search:
         search_filter = f"%{search}%"
         query = query.where(VirtualMachine.name.ilike(search_filter))
+
+    if node:
+        query = query.where(VirtualMachine.proxmox_node == node)
 
     # Get total count
     count_query = select(func.count()).select_from(query.subquery())
@@ -160,19 +230,22 @@ async def create_vm(
     db: AsyncSession = Depends(get_db)
 ) -> VirtualMachine:
     """
-    Create a new virtual machine with multi-disk support and quota enforcement.
+    Create a new virtual machine or LXC container with quota enforcement.
 
-    The VM will be provisioned asynchronously on Proxmox via Celery task.
-    Supports multiple disks with per-disk storage pool selection and ISO boot.
+    For QEMU VMs: supports multiple disks, ISO boot, and full virtualization.
+    For LXC containers: lightweight containers with rootfs and template-based provisioning.
 
     Requires: VM_CREATE permission
     """
-    # 1. Calculate total storage from all disks
-    total_storage_gb = sum(disk.size_gb for disk in vm_data.disks)
+    # Calculate total storage
+    if vm_data.vm_type == "lxc":
+        total_storage_gb = vm_data.rootfs_size or 8
+    else:
+        total_storage_gb = sum(disk.size_gb for disk in vm_data.disks)
 
-    # 1.1. Validate ISO access if provided
+    # Validate ISO access if provided (qemu only)
     iso_image = None
-    if vm_data.iso_image_id:
+    if vm_data.iso_image_id and vm_data.vm_type == "qemu":
         result = await db.execute(
             select(ISOImage).where(
                 ISOImage.id == vm_data.iso_image_id,
@@ -187,24 +260,29 @@ async def create_vm(
                 detail="ISO image not found"
             )
 
-        # Check ISO access permissions
         if not iso_image.is_public and iso_image.organization_id != org_context.org_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied to this ISO image"
             )
 
-        # Ensure ISO is ready
         if iso_image.upload_status != "ready":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"ISO is not ready yet (status: {iso_image.upload_status})"
             )
 
-    # 1.2. Check quota availability BEFORE creating VM
+    # Validate LXC template if provided
+    if vm_data.vm_type == "lxc" and not vm_data.ostemplate:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ostemplate is required for LXC containers"
+        )
+
+    # Check and reserve quota atomically (prevents TOCTOU race)
     quota_service = QuotaService(db)
 
-    quota_check = await quota_service.check_quota_availability(
+    quota_check = await quota_service.check_and_reserve(
         organization_id=org_context.org_id,
         cpu_cores=vm_data.cpu_cores,
         memory_gb=vm_data.memory_mb / 1024,
@@ -218,16 +296,16 @@ async def create_vm(
             detail=f"Quota exceeded: {', '.join(quota_check.exceeded_resources)}"
         )
 
-    # 2. Select cluster (must be accessible by organization)
+    # Select cluster
     if vm_data.proxmox_cluster_id:
         result = await db.execute(
             select(ProxmoxCluster).where(
                 ProxmoxCluster.id == vm_data.proxmox_cluster_id,
-                ProxmoxCluster.is_active == True,
+                ProxmoxCluster.is_active.is_(True),
                 ProxmoxCluster.deleted_at.is_(None),
                 or_(
                     ProxmoxCluster.organization_id == org_context.org_id,
-                    ProxmoxCluster.is_shared == True
+                    ProxmoxCluster.is_shared.is_(True)
                 )
             )
         )
@@ -238,17 +316,15 @@ async def create_vm(
                 detail="Proxmox cluster not found or not accessible by your organization"
             )
     else:
-        # Auto-select: prefer org-specific, fallback to shared
         result = await db.execute(
             select(ProxmoxCluster).where(
-                ProxmoxCluster.is_active == True,
+                ProxmoxCluster.is_active.is_(True),
                 ProxmoxCluster.deleted_at.is_(None),
                 or_(
                     ProxmoxCluster.organization_id == org_context.org_id,
-                    ProxmoxCluster.is_shared == True
+                    ProxmoxCluster.is_shared.is_(True)
                 )
             ).order_by(
-                # Prefer org-specific clusters
                 ProxmoxCluster.organization_id == org_context.org_id,
                 ProxmoxCluster.load_score.asc()
             ).limit(1)
@@ -260,23 +336,23 @@ async def create_vm(
                 detail="No active Proxmox clusters available for your organization"
             )
 
-    # Get next VMID from Proxmox
-    proxmox_service = ProxmoxService(cluster)
+    # Get next VMID and best node
+    proxmox_service = get_proxmox_service(cluster)
     try:
-        proxmox_vmid = proxmox_service.get_next_vmid()
-        best_node = proxmox_service.select_best_node()
+        best_node = await proxmox_service.select_best_node_async()
         if not best_node:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="No available nodes in Proxmox cluster"
             )
+        proxmox_vmid = await proxmox_service.get_next_vmid_async(node=best_node)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Failed to connect to Proxmox cluster: {str(e)}"
         )
 
-    # 2.1. Validate network access if provided
+    # Validate network access if provided
     if vm_data.network_id:
         from app.models.vpc_network import VPCNetwork
         result = await db.execute(
@@ -285,7 +361,7 @@ async def create_vm(
                 VPCNetwork.deleted_at.is_(None),
                 or_(
                     VPCNetwork.organization_id == org_context.org_id,
-                    VPCNetwork.is_shared == True
+                    VPCNetwork.is_shared.is_(True)
                 )
             )
         )
@@ -296,13 +372,14 @@ async def create_vm(
                 detail="Network not found or not accessible by your organization"
             )
 
-    # 3. Create VM record in database
+    # Create VM/LXC record
     vm = VirtualMachine(
         name=vm_data.name,
         hostname=vm_data.hostname,
         description=vm_data.description,
         organization_id=org_context.org_id,
         owner_id=org_context.user.id,
+        vm_type=vm_data.vm_type,
         proxmox_cluster_id=cluster.id,
         proxmox_vmid=proxmox_vmid,
         proxmox_node=best_node,
@@ -312,51 +389,49 @@ async def create_vm(
         os_type=vm_data.os_type,
         status="provisioning",
         tags=vm_data.tags or [],
-        network_id=vm_data.network_id,  # Store network for Celery task
+        network_id=vm_data.network_id,
     )
 
     db.add(vm)
-    await db.flush()  # Flush to get VM ID
+    await db.flush()
 
-    # 3.1. Create disk records
-    default_storage = "local-lvm"  # Default storage pool
-    for idx, disk_spec in enumerate(vm_data.disks):
-        disk = VMDisk(
-            vm_id=vm.id,
-            disk_index=idx,
-            disk_interface=disk_spec.disk_interface,
-            disk_number=idx,
-            storage_pool=disk_spec.storage_pool or default_storage,
-            size_gb=disk_spec.size_gb,
-            disk_format=disk_spec.disk_format,
-            is_boot_disk=disk_spec.is_boot_disk,
-            is_cdrom=False,
-            status="creating"
-        )
-        db.add(disk)
+    # Create disk records (qemu only)
+    if vm_data.vm_type == "qemu":
+        default_storage = "local-lvm"
+        for idx, disk_spec in enumerate(vm_data.disks):
+            disk = VMDisk(
+                vm_id=vm.id,
+                disk_index=idx,
+                disk_interface=disk_spec.disk_interface,
+                disk_number=idx,
+                storage_pool=disk_spec.storage_pool or default_storage,
+                size_gb=disk_spec.size_gb,
+                disk_format=disk_spec.disk_format,
+                is_boot_disk=disk_spec.is_boot_disk,
+                is_cdrom=False,
+                status="creating"
+            )
+            db.add(disk)
 
-    # 3.2. Create CD-ROM disk for ISO if provided
-    if iso_image:
-        cdrom_disk = VMDisk(
-            vm_id=vm.id,
-            disk_index=len(vm_data.disks),
-            disk_interface="ide",
-            disk_number=2,
-            storage_pool="",  # CD-ROM doesn't need storage pool
-            size_gb=0,  # CD-ROM has no size
-            disk_format=None,
-            is_boot_disk=False,
-            is_cdrom=True,
-            iso_image_id=iso_image.id,
-            status="creating"
-        )
-        db.add(cdrom_disk)
+        if iso_image:
+            cdrom_disk = VMDisk(
+                vm_id=vm.id,
+                disk_index=len(vm_data.disks),
+                disk_interface="ide",
+                disk_number=2,
+                storage_pool="",
+                size_gb=0,
+                disk_format=None,
+                is_boot_disk=False,
+                is_cdrom=True,
+                iso_image_id=iso_image.id,
+                status="creating"
+            )
+            db.add(cdrom_disk)
 
-    await db.commit()
-    await db.refresh(vm)
-
-    # 4. Increment quota usage
-    await quota_service.increment_usage(
+    # Increment user quota usage BEFORE commit (same transaction)
+    await quota_service.increment_user_usage(
+        user_id=org_context.user.id,
         organization_id=org_context.org_id,
         cpu_cores=vm_data.cpu_cores,
         memory_gb=vm_data.memory_mb / 1024,
@@ -364,19 +439,388 @@ async def create_vm(
         vm_count=1
     )
 
-    # 5. Queue VM provisioning task (Celery)
+    await db.commit()
+    await db.refresh(vm)
+
+    # Queue provisioning task
     try:
-        from app.tasks.vm_tasks import provision_vm_with_disks
+        if vm_data.vm_type == "lxc":
+            from app.tasks.vm_tasks import provision_lxc_container
 
-        # Queue the provisioning task
-        provision_vm_with_disks.delay(str(vm.id))
+            provision_lxc_container.delay(
+                str(vm.id),
+                vm_data.ostemplate,
+                vm_data.rootfs_size or 8,
+                vm_data.storage_pool or "local-lvm"
+            )
 
-        logger.info(f"VM {vm.id} provisioning queued with {len(vm_data.disks)} disk(s)")
+            logger.info(f"LXC {vm.id} provisioning queued with template {vm_data.ostemplate}")
+        else:
+            from app.tasks.vm_tasks import provision_vm_with_disks
 
+            provision_vm_with_disks.delay(str(vm.id))
+
+            logger.info(f"VM {vm.id} provisioning queued with {len(vm_data.disks)} disk(s)")
+
+    except ImportError as e:
+        logger.error(f"Provisioning task import failed: {e}")
+        vm.status = "error"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provisioning task unavailable"
+        )
+    except (KombuOperationalError, ConnectionError, OSError) as e:
+        logger.error(f"Task queue unavailable: {e}")
+        vm.status = "error"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Task queue unavailable"
+        )
     except Exception as e:
-        logger.error(f"Failed to queue VM provisioning task: {e}")
-        # Mark VM as error but don't fail the request
-        # The VM record exists and quota is reserved
+        logger.error(f"Failed to queue provisioning task: {e}")
+        vm.status = "error"
+        await db.commit()
+
+    # Audit: VM created
+    await create_audit_log(
+        db=db,
+        action=AuditAction.VM_CREATED,
+        resource_type="vm",
+        resource_id=vm.id,
+        resource_name=vm.name,
+        user_id=org_context.user.id,
+        organization_id=org_context.org_id,
+        details={
+            "vm_type": vm.vm_type,
+            "cpu_cores": vm.cpu_cores,
+            "memory_mb": vm.memory_mb,
+            "proxmox_vmid": vm.proxmox_vmid,
+        },
+    )
+
+    return vm
+
+
+@router.get("/templates", response_model=VMListResponse)
+async def list_templates(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    os_type: Optional[str] = None,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_CREATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List available VM templates.
+
+    Returns public templates and templates owned by the organization.
+
+    Requires: VM_CREATE permission
+    """
+    per_page = min(per_page, 100)
+
+    conditions = [
+            VirtualMachine.is_template.is_(True),
+        VirtualMachine.deleted_at.is_(None),
+        or_(
+            VirtualMachine.organization_id == org_context.org_id,
+            VirtualMachine.organization_id.is_(None)
+        )
+    ]
+
+    if os_type:
+        conditions.append(VirtualMachine.os_type == os_type)
+
+    query = select(VirtualMachine).options(
+        joinedload(VirtualMachine.disks),
+        joinedload(VirtualMachine.proxmox_cluster),
+        joinedload(VirtualMachine.owner),
+        raiseload(VirtualMachine.network_interfaces),
+    ).where(*conditions).order_by(VirtualMachine.created_at.desc())
+
+    count_result = await db.execute(
+        select(func.count()).select_from(query.subquery())
+    )
+    total = count_result.scalar_one()
+
+    offset = (page - 1) * per_page
+    result = await db.execute(query.offset(offset).limit(per_page))
+    templates = list(result.scalars().all())
+
+    return VMListResponse(
+        data=templates,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=(total + per_page - 1) // per_page
+    )
+
+
+@router.get("/containers/templates")
+async def list_lxc_templates(
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_CREATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List available LXC OS templates from Proxmox storage.
+
+    Queries all accessible storage pools for vztmpl content.
+    Returns friendly names and raw paths for dropdown selection.
+
+    Requires: VM_CREATE permission
+    """
+    from app.services.proxmox_service import ProxmoxService
+
+    # Get accessible clusters
+    cluster_query = select(ProxmoxCluster).where(
+        ProxmoxCluster.is_active.is_(True),
+        ProxmoxCluster.deleted_at.is_(None),
+        or_(
+            ProxmoxCluster.is_shared.is_(True),
+            ProxmoxCluster.organization_id == org_context.org_id
+        )
+    )
+    result = await db.execute(cluster_query)
+    clusters = list(result.scalars().all())
+
+    if not clusters:
+        return {"data": [], "total": 0}
+
+    # Get storage pools that support vztmpl
+    from app.models.storage_pool import StoragePool
+    from sqlalchemy import cast, Text
+
+    cluster_ids = [c.id for c in clusters]
+    storage_query = select(StoragePool).where(
+        StoragePool.proxmox_cluster_id.in_(cluster_ids),
+        StoragePool.deleted_at.is_(None),
+        StoragePool.is_active.is_(True),
+        cast(StoragePool.content_types, Text).contains('"vztmpl"')
+    )
+    storage_result = await db.execute(storage_query)
+    storage_pools = list(storage_result.scalars().all())
+
+    templates = []
+    seen_volid = set()
+    proxmox_service = ProxmoxService()
+
+    for pool in storage_pools:
+        cluster = next((c for c in clusters if c.id == pool.proxmox_cluster_id), None)
+        if not cluster:
+            continue
+
+        try:
+            # Get node from cluster API URL or use first node
+            node = cluster.datacenter or "pve1"
+            content = await proxmox_service.get_storage_content_async(
+                node=node, storage=pool.storage_name, content_type="vztmpl"
+            )
+            for item in content:
+                volid = item.get("volid", "")
+                if volid and volid not in seen_volid:
+                    seen_volid.add(volid)
+                    # Extract friendly name from volid
+                    # e.g., "local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst"
+                    filename = volid.split("/")[-1] if "/" in volid else volid
+                    # Remove extension and version info for display
+                    display_name = filename.replace(".tar.zst", "").replace(".tar.gz", "").replace(".tar.xz", "")
+                    # Clean up: debian-12-standard_12.2-1_amd64 -> Debian 12 Standard
+                    display_name = display_name.replace("_", " ").replace("-", " ").strip()
+                    # Capitalize words
+                    display_name = " ".join(w.capitalize() if w.islower() else w for w in display_name.split())
+
+                    templates.append({
+                        "volid": volid,
+                        "display_name": display_name,
+                        "storage": pool.storage_name,
+                        "cluster": cluster.name,
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to list templates from {pool.storage_name} on {cluster.name}: {e}")
+
+    # Sort by display name
+    templates.sort(key=lambda t: t["display_name"])
+
+    return {"data": templates, "total": len(templates)}
+
+
+@router.post("/templates/{template_id}/clone", response_model=VMResponse, status_code=status.HTTP_201_CREATED)
+async def clone_template(
+    template_id: str,
+    clone_data: VMCloneRequest,
+    background_tasks: BackgroundTasks,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_CREATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Clone a VM from a template.
+
+    Creates a new VM by cloning the specified template.
+    Resource limits (CPU, memory) can be overridden.
+
+    Requires: VM_CREATE permission
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            VirtualMachine.id == template_id,
+        VirtualMachine.is_template.is_(True),
+            VirtualMachine.deleted_at.is_(None),
+            or_(
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.organization_id.is_(None)
+            )
+        )
+    )
+    template = result.scalar_one_or_none()
+
+    if not template:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Template not found"
+        )
+
+    quota_service = QuotaService(db)
+
+    cpu_cores = clone_data.cpu_cores or template.cpu_cores
+    memory_mb = clone_data.memory_mb or template.memory_mb
+
+    # Check and reserve quota atomically (prevents TOCTOU race)
+    quota_check = await quota_service.check_and_reserve(
+        organization_id=org_context.org_id,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_mb / 1024,
+        storage_gb=sum(d.size_gb for d in template.disks),
+        vm_count=1
+    )
+
+    if not quota_check.is_available:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Organization quota exceeded: {', '.join(quota_check.exceeded_resources)}"
+        )
+
+    # Check user-level quota
+    user_quota_check = await quota_service.check_user_quota_availability(
+        user_id=org_context.user.id,
+        organization_id=org_context.org_id,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_mb / 1024,
+        storage_gb=sum(d.size_gb for d in template.disks),
+        vm_count=1
+    )
+
+    if not user_quota_check.is_available:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"User quota exceeded: {', '.join(user_quota_check.exceeded_resources)}"
+        )
+
+    if clone_data.proxmox_cluster_id:
+        result = await db.execute(
+            select(ProxmoxCluster).where(
+                ProxmoxCluster.id == clone_data.proxmox_cluster_id,
+                ProxmoxCluster.is_active.is_(True),
+                ProxmoxCluster.deleted_at.is_(None),
+                or_(
+                    ProxmoxCluster.organization_id == org_context.org_id,
+                    ProxmoxCluster.is_shared.is_(True)
+                )
+            )
+        )
+        cluster = result.scalar_one_or_none()
+        if not cluster:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Target cluster not found or not accessible"
+            )
+    else:
+        cluster = template.proxmox_cluster
+
+    proxmox_service = get_proxmox_service(cluster)
+    try:
+        clone_node = template.proxmox_node
+        proxmox_vmid = await proxmox_service.get_next_vmid_async(node=clone_node)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to connect to Proxmox cluster: {str(e)}"
+        )
+
+    vm = VirtualMachine(
+        name=clone_data.name,
+        hostname=clone_data.hostname,
+        description=clone_data.description,
+        organization_id=org_context.org_id,
+        owner_id=org_context.user.id,
+        proxmox_cluster_id=cluster.id,
+        proxmox_vmid=proxmox_vmid,
+        proxmox_node=clone_node,
+        cpu_cores=cpu_cores,
+        cpu_sockets=template.cpu_sockets,
+        memory_mb=memory_mb,
+        os_type=template.os_type,
+        status="provisioning",
+        tags=template.tags or [],
+        network_id=clone_data.network_id,
+    )
+
+    db.add(vm)
+    await db.flush()
+
+    for disk in template.disks:
+        new_disk = VMDisk(
+            vm_id=vm.id,
+            disk_index=disk.disk_index,
+            disk_interface=disk.disk_interface,
+            disk_number=disk.disk_number,
+            storage_pool=disk.storage_pool,
+            size_gb=disk.size_gb,
+            disk_format=disk.disk_format,
+            is_boot_disk=disk.is_boot_disk,
+            is_cdrom=disk.is_cdrom,
+            status="creating"
+        )
+        db.add(new_disk)
+
+    # Increment user quota BEFORE commit (same transaction)
+    await quota_service.increment_user_usage(
+        user_id=org_context.user.id,
+        organization_id=org_context.org_id,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_mb / 1024,
+        storage_gb=sum(d.size_gb for d in template.disks),
+        vm_count=1
+    )
+
+    await db.commit()
+    await db.refresh(vm)
+
+    try:
+        from app.tasks.vm_tasks import clone_vm_from_template
+
+        clone_vm_from_template.delay(str(vm.id), str(template.id))
+
+        logger.info(f"VM {vm.id} clone from template {template.id} queued")
+
+    except ImportError as e:
+        logger.error(f"Clone task import failed: {e}")
+        vm.status = "error"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Clone task unavailable"
+        )
+    except (KombuOperationalError, ConnectionError, OSError) as e:
+        logger.error(f"Task queue unavailable: {e}")
+        vm.status = "error"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Task queue unavailable"
+        )
+    except Exception as e:
+        logger.error(f"Failed to queue VM clone task: {e}")
         vm.status = "error"
         await db.commit()
 
@@ -511,7 +955,7 @@ async def delete_vm(
         select(VMDisk).where(
             VMDisk.vm_id == vm_id,
             VMDisk.deleted_at.is_(None),
-            VMDisk.is_cdrom == False
+            VMDisk.is_cdrom.is_(False)
         )
     )
     disks = list(result.scalars().all())
@@ -521,23 +965,67 @@ async def delete_vm(
     cpu_cores = vm.cpu_cores
     memory_gb = vm.memory_mb / 1024
 
-    # Delete from Proxmox
-    try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        proxmox_service.delete_vm(vm.proxmox_node, vm.proxmox_vmid)
-    except Exception as e:
-        # Log error but continue with soft delete
-        print(f"Failed to delete VM from Proxmox: {e}")
+    # Unregister DNS record before Proxmox deletion
+    if vm.hostname and vm.primary_ip_address:
+        try:
+            from app.services.dns_provider import DNSProviderError
+            dns = _get_dns_provider_for_endpoint()
+            if dns:
+                dns.unregister(vm.hostname, vm.primary_ip_address)
+                logger.info(f"DNS unregistered for VM {vm_id}: {vm.hostname}")
+        except DNSProviderError as e:
+            logger.warning(f"DNS unregistration failed for VM {vm_id}: {e}")
+            # Non-fatal — continue with deletion
 
-    # Soft delete
-    vm.deleted_at = datetime.utcnow()
-    await db.commit()
+    # Delete from Proxmox first — fail fast if Proxmox deletion fails
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+    try:
+        await proxmox_service.delete_vm_async(vm.proxmox_node, vm.proxmox_vmid)
+    except Exception as e:
+        error_msg = str(e)
+        # Treat "does not exist" as already deleted (idempotent delete)
+        if "does not exist" in error_msg or "Configuration file" in error_msg:
+            logger.warning(f"VM {vm_id} (Proxmox VMID {vm.proxmox_vmid}) not found on {vm.proxmox_node}, treating as already deleted")
+        else:
+            logger.error(f"Failed to delete VM {vm_id} (Proxmox VMID {vm.proxmox_vmid}) from Proxmox: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete VM from Proxmox: {e}"
+            )
+
+    # Proxmox deletion succeeded — now soft-delete from database
+    now = datetime.now(timezone.utc)
+    vm.deleted_at = now
 
     # Soft delete disk records
     for disk in disks:
-        disk.deleted_at = datetime.utcnow()
+        disk.deleted_at = now
 
-    # Release quota
+    # Cascade soft-delete network interfaces
+    from app.models.vm_network_interface import VMNetworkInterface
+    result = await db.execute(
+        select(VMNetworkInterface).where(
+            VMNetworkInterface.vm_id == vm_id,
+            VMNetworkInterface.deleted_at.is_(None)
+        )
+    )
+    interfaces = list(result.scalars().all())
+    for interface in interfaces:
+        interface.deleted_at = now
+
+    # Cascade soft-delete IP allocations
+    from app.models.network_ip_allocation import NetworkIPAllocation
+    result = await db.execute(
+        select(NetworkIPAllocation).where(
+            NetworkIPAllocation.vm_id == vm_id,
+            NetworkIPAllocation.deleted_at.is_(None)
+        )
+    )
+    allocations = list(result.scalars().all())
+    for allocation in allocations:
+        allocation.deleted_at = now
+
+    # Release org quota BEFORE commit (same transaction)
     quota_service = QuotaService(db)
     await quota_service.decrement_usage(
         organization_id=vm.organization_id,
@@ -547,7 +1035,31 @@ async def delete_vm(
         vm_count=1
     )
 
-    return None
+    # Release user quota BEFORE commit (same transaction)
+    await quota_service.decrement_user_usage(
+        user_id=vm.owner_id,
+        organization_id=vm.organization_id,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_gb,
+        storage_gb=total_storage_gb,
+        vm_count=1
+    )
+
+    await db.commit()
+
+    # Audit: VM deleted
+    await create_audit_log(
+        db=db,
+        action=AuditAction.VM_DELETED,
+        resource_type="vm",
+        resource_id=vm.id,
+        resource_name=vm.name,
+        user_id=org_context.user.id,
+        organization_id=org_context.org_id,
+        details={"proxmox_vmid": vm.proxmox_vmid, "vm_type": vm.vm_type},
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{vm_id}/start", status_code=status.HTTP_202_ACCEPTED)
@@ -583,18 +1095,27 @@ async def start_vm(
 
     # Start VM on Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        result = proxmox_service.start_vm(vm.proxmox_node, vm.proxmox_vmid)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        result = await proxmox_service.start_vm_async(vm.proxmox_node, vm.proxmox_vmid)
 
-        # Update status
-        vm.status = "running"
+        # Set transitional status
+        vm.status = "starting"
         vm.power_state = "on"
-        vm.started_at = datetime.utcnow()
+        vm.started_at = datetime.now(timezone.utc)
         await db.commit()
+
+        # Queue polling task to update status when Proxmox confirms
+        task_upid = result.get("task_id")
+        poll_vm_power_state.delay(
+            vm_id=str(vm.id),
+            proxmox_node=vm.proxmox_node,
+            task_upid=task_upid,
+            expected_final_status="running"
+        )
 
         return {
             "message": "VM start initiated",
-            "task_id": result.get("task_id")
+            "task_id": task_upid
         }
     except Exception as e:
         raise HTTPException(
@@ -637,18 +1158,27 @@ async def stop_vm(
 
     # Stop VM on Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        result = proxmox_service.stop_vm(vm.proxmox_node, vm.proxmox_vmid, force=action_data.force)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        result = await proxmox_service.stop_vm_async(vm.proxmox_node, vm.proxmox_vmid, force=action_data.force)
 
-        # Update status
-        vm.status = "stopped"
+        # Set transitional status
+        vm.status = "stopping"
         vm.power_state = "off"
-        vm.stopped_at = datetime.utcnow()
+        vm.stopped_at = datetime.now(timezone.utc)
         await db.commit()
+
+        # Queue polling task to update status when Proxmox confirms
+        task_upid = result.get("task_id")
+        poll_vm_power_state.delay(
+            vm_id=str(vm.id),
+            proxmox_node=vm.proxmox_node,
+            task_upid=task_upid,
+            expected_final_status="stopped"
+        )
 
         return {
             "message": "VM stop initiated",
-            "task_id": result.get("task_id")
+            "task_id": task_upid
         }
     except Exception as e:
         raise HTTPException(
@@ -690,12 +1220,26 @@ async def restart_vm(
 
     # Restart VM on Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        result = proxmox_service.restart_vm(vm.proxmox_node, vm.proxmox_vmid)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        result = await proxmox_service.restart_vm_async(vm.proxmox_node, vm.proxmox_vmid)
+
+        # Set transitional status
+        vm.status = "rebooting"
+        vm.started_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        # Queue polling task to update status when Proxmox confirms
+        task_upid = result.get("task_id")
+        poll_vm_power_state.delay(
+            vm_id=str(vm.id),
+            proxmox_node=vm.proxmox_node,
+            task_upid=task_upid,
+            expected_final_status="running"
+        )
 
         return {
             "message": "VM restart initiated",
-            "task_id": result.get("task_id")
+            "task_id": task_upid
         }
     except Exception as e:
         raise HTTPException(
@@ -749,8 +1293,8 @@ async def get_vm_console(
 
     # Get console URL from Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        console_info = proxmox_service.get_console_url(vm.proxmox_node, vm.proxmox_vmid)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        console_info = await proxmox_service.get_console_url_async(vm.proxmox_node, vm.proxmox_vmid)
 
         # Extract Proxmox server URL for workaround instructions
         proxmox_url = console_info["console_url"]
@@ -807,8 +1351,8 @@ async def sync_vm_status(
 
     # Get status from Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        proxmox_status = proxmox_service.get_vm_status(vm.proxmox_node, vm.proxmox_vmid)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        proxmox_status = await proxmox_service.get_vm_status_async(vm.proxmox_node, vm.proxmox_vmid)
 
         # Update VM status based on Proxmox
         vm_status = proxmox_status.get("status", "unknown")
@@ -884,12 +1428,24 @@ async def force_stop_vm(
 
     # Force stop VM on Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        proxmox_service.force_stop_vm(vm.proxmox_node, vm.proxmox_vmid)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        await proxmox_service.force_stop_vm_async(vm.proxmox_node, vm.proxmox_vmid)
 
         vm.status = "stopped"
         await db.commit()
         await db.refresh(vm)
+
+        # Audit: VM force stopped
+        await create_audit_log(
+            db=db,
+            action=AuditAction.VM_FORCE_STOPPED,
+            resource_type="vm",
+            resource_id=vm.id,
+            resource_name=vm.name,
+            user_id=org_context.user.id,
+            organization_id=org_context.org_id,
+            details={"proxmox_vmid": vm.proxmox_vmid},
+        )
 
         logger.info(f"Force stopped VM {vm.id}")
         return vm
@@ -936,8 +1492,8 @@ async def reboot_vm(
 
     # Reboot VM on Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        proxmox_service.reboot_vm(vm.proxmox_node, vm.proxmox_vmid)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        await proxmox_service.reboot_vm_async(vm.proxmox_node, vm.proxmox_vmid)
 
         logger.info(f"Rebooted VM {vm.id}")
         await db.refresh(vm)
@@ -985,8 +1541,8 @@ async def reset_vm(
 
     # Reset VM on Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        proxmox_service.reset_vm(vm.proxmox_node, vm.proxmox_vmid)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        await proxmox_service.reset_vm_async(vm.proxmox_node, vm.proxmox_vmid)
 
         logger.info(f"Reset VM {vm.id}")
         await db.refresh(vm)
@@ -1054,9 +1610,9 @@ async def resize_vm_resources(
     if resize_data.memory_mb is not None:
         memory_delta = resize_data.memory_mb - vm.memory_mb
 
-    # Check quota if resources are increasing
+    # Check and reserve quota if resources are increasing (prevents TOCTOU race)
     if cpu_delta > 0 or memory_delta > 0:
-        quota_check = await quota_service.check_quota_availability(
+        quota_check = await quota_service.check_and_reserve(
             organization_id=org_context.org_id,
             cpu_cores=cpu_delta if cpu_delta > 0 else 0,
             memory_gb=(memory_delta / 1024) if memory_delta > 0 else 0
@@ -1065,14 +1621,29 @@ async def resize_vm_resources(
         if not quota_check.is_available:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Quota exceeded: {', '.join(quota_check.exceeded_resources)}"
+                detail=f"Organization quota exceeded: {', '.join(quota_check.exceeded_resources)}"
+            )
+
+    # Check user-level quota if resources are increasing
+    if cpu_delta > 0 or memory_delta > 0:
+        user_quota_check = await quota_service.check_user_quota_availability(
+            user_id=org_context.user.id,
+            organization_id=org_context.org_id,
+            cpu_cores=cpu_delta if cpu_delta > 0 else 0,
+            memory_gb=(memory_delta / 1024) if memory_delta > 0 else 0
+        )
+
+        if not user_quota_check.is_available:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"User quota exceeded: {', '.join(user_quota_check.exceeded_resources)}"
             )
 
     # Resize VM on Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
 
-        proxmox_service.resize_vm(
+        await proxmox_service.resize_vm_async(
             node=vm.proxmox_node,
             vmid=vm.proxmox_vmid,
             cpu_cores=resize_data.cpu_cores,
@@ -1090,23 +1661,30 @@ async def resize_vm_resources(
         if resize_data.memory_mb is not None:
             vm.memory_mb = resize_data.memory_mb
 
+        # Update user quota BEFORE commit (same transaction)
+        if cpu_delta > 0 or memory_delta > 0:
+            await quota_service.increment_user_usage(
+                user_id=org_context.user.id,
+                organization_id=org_context.org_id,
+                cpu_cores=cpu_delta if cpu_delta > 0 else 0,
+                memory_gb=(memory_delta / 1024) if memory_delta > 0 else 0
+            )
+        elif cpu_delta < 0 or memory_delta < 0:
+            # Decrement both org and user quota if shrinking
+            await quota_service.decrement_usage(
+                organization_id=org_context.org_id,
+                cpu_cores=abs(cpu_delta) if cpu_delta < 0 else 0,
+                memory_gb=(abs(memory_delta) / 1024) if memory_delta < 0 else 0
+            )
+            await quota_service.decrement_user_usage(
+                user_id=org_context.user.id,
+                organization_id=org_context.org_id,
+                cpu_cores=abs(cpu_delta) if cpu_delta < 0 else 0,
+                memory_gb=(abs(memory_delta) / 1024) if memory_delta < 0 else 0
+            )
+
         await db.commit()
         await db.refresh(vm)
-
-        # Update quota
-        if cpu_delta != 0 or memory_delta != 0:
-            if cpu_delta > 0 or memory_delta > 0:
-                await quota_service.increment_usage(
-                    organization_id=org_context.org_id,
-                    cpu_cores=cpu_delta if cpu_delta > 0 else 0,
-                    memory_gb=(memory_delta / 1024) if memory_delta > 0 else 0
-                )
-            else:
-                await quota_service.decrement_usage(
-                    organization_id=org_context.org_id,
-                    cpu_cores=abs(cpu_delta) if cpu_delta < 0 else 0,
-                    memory_gb=(abs(memory_delta) / 1024) if memory_delta < 0 else 0
-                )
 
         logger.info(f"Resized VM {vm.id}")
         return vm
@@ -1123,7 +1701,7 @@ async def resize_vm_resources(
 @router.post("/{vm_id}/attach-network", response_model=VMResponse)
 async def attach_network_to_vm(
     vm_id: str,
-    attach_request: dict,  # Using dict to avoid circular import, will validate inline
+    attach_request: VMNetworkAttachRequest,
     org_context: OrgContext = Depends(RequirePermission(Permission.NETWORK_ATTACH)),
     db: AsyncSession = Depends(get_db)
 ):
@@ -1145,36 +1723,16 @@ async def attach_network_to_vm(
     }
     ```
     """
-    from app.models.vpc_network import VPCNetwork
     from app.models.vm_network_interface import VMNetworkInterface
     from app.services.network_service import NetworkService
     from app.services.ipam_service import IPAMService
     from app.schemas.network import IPAllocationRequest
 
-    # Validate request
-    network_id = attach_request.get("network_id")
-    interface_order = attach_request.get("interface_order", 0)
-    model = attach_request.get("model", "virtio")
-    allocate_ip = attach_request.get("allocate_ip", True)
-    ip_pool_id = attach_request.get("ip_pool_id")
-
-    if not network_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="network_id is required"
-        )
-
-    if not (0 <= interface_order <= 3):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="interface_order must be between 0 and 3"
-        )
-
-    if model not in ["virtio", "e1000", "rtl8139"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="model must be one of: virtio, e1000, rtl8139"
-        )
+    network_id = attach_request.network_id
+    interface_order = attach_request.interface_order
+    model = attach_request.model
+    allocate_ip = attach_request.allocate_ip
+    ip_pool_id = attach_request.ip_pool_id
 
     # Get VM with permission check
     result = await db.execute(
@@ -1235,8 +1793,8 @@ async def attach_network_to_vm(
         )
 
     # Build Proxmox network config
-    proxmox_service = ProxmoxService(vm.proxmox_cluster)
-    net_config = proxmox_service.build_network_config(
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+    net_config = await proxmox_service.build_network_config_async(
         interface_name=interface_name,
         vlan_id=network.vlan_id,
         bridge=network.bridge,
@@ -1245,7 +1803,7 @@ async def attach_network_to_vm(
 
     # Apply to Proxmox
     try:
-        proxmox_service.attach_network_to_vm(
+        await proxmox_service.attach_network_to_vm_async(
             node=vm.proxmox_node,
             vmid=vm.proxmox_vmid,
             interface_name=interface_name,
@@ -1367,8 +1925,8 @@ async def detach_network_from_vm(
 
     # Detach from Proxmox
     try:
-        proxmox_service = ProxmoxService(vm.proxmox_cluster)
-        proxmox_service.detach_network_from_vm(
+        proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+        await proxmox_service.detach_network_from_vm_async(
             node=vm.proxmox_node,
             vmid=vm.proxmox_vmid,
             interface_name=interface_name
@@ -1389,10 +1947,489 @@ async def detach_network_from_vm(
         )
 
     # Soft delete interface
-    interface.deleted_at = datetime.utcnow()
+    interface.deleted_at = datetime.now(timezone.utc)
 
     await db.commit()
 
     logger.info(f"Detached network interface {interface_name} from VM {vm.id}")
 
+
+@router.post("/{vm_id}/convert-to-template", response_model=VMResponse)
+async def convert_to_template(
+    vm_id: str,
+    template_data: VMTemplateCreate,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_CREATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Convert an existing VM to a template.
+
+    The VM will be converted to a template on Proxmox and marked as immutable.
+    Templates can be used to clone new VMs.
+
+    Requires: VM_CREATE permission
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            VirtualMachine.id == vm_id,
+            VirtualMachine.organization_id == org_context.org_id,
+            VirtualMachine.deleted_at.is_(None)
+        )
+    )
+    vm = result.scalar_one_or_none()
+
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="VM not found"
+        )
+
+    if vm.is_template:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM is already a template"
+        )
+
+    if vm.status != "stopped":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM must be stopped before converting to template"
+        )
+
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    try:
+        await proxmox_service.convert_vm_to_template_async(
+            node=vm.proxmox_node,
+            vmid=vm.proxmox_vmid
+        )
+    except Exception as e:
+        logger.error(f"Failed to convert VM {vm_id} to template on Proxmox: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to convert to template on Proxmox: {str(e)}"
+        )
+
+    vm.is_template = True
+    vm.name = template_data.name
+    vm.description = template_data.description
+    vm.os_type = template_data.os_type or vm.os_type
+    vm.tags = template_data.tags or vm.tags
+    vm.status = "template"
+
+    await db.commit()
+    await db.refresh(vm)
+
+    logger.info(f"VM {vm_id} converted to template")
+    return vm
+
+
+# ==================== Firewall Management ====================
+
+from app.services.firewall_service import FirewallService
+from app.schemas.firewall import (
+    FirewallRuleCreate,
+    FirewallRuleUpdate,
+    FirewallRuleResponse,
+    FirewallRuleListResponse,
+)
+
+
+@router.get("/{vm_id}/firewall/status")
+async def get_firewall_status(
+    vm_id: str,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_READ)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get firewall status for a VM.
+
+    Returns firewall enabled state, policies, and rules from Proxmox.
+
+    **Required Permission**: vm:read
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    if not vm.proxmox_cluster:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM has no Proxmox cluster configured"
+        )
+
+    firewall_service = FirewallService(db)
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    status_data = await firewall_service.get_firewall_status(
+        vm_id=vm_id,
+        organization_id=org_context.org_id,
+        proxmox_service=proxmox_service
+    )
+    return status_data
+
+
+@router.post("/{vm_id}/firewall/enable", status_code=status.HTTP_204_NO_CONTENT)
+async def enable_firewall(
+    vm_id: str,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_UPDATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Enable firewall for a VM.
+
+    **Required Permission**: vm:update
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    if not vm.proxmox_cluster:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM has no Proxmox cluster configured"
+        )
+
+    firewall_service = FirewallService(db)
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    await firewall_service.enable_firewall(
+        vm_id=vm_id,
+        organization_id=org_context.org_id,
+        proxmox_service=proxmox_service
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{vm_id}/firewall/disable", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_firewall(
+    vm_id: str,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_UPDATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Disable firewall for a VM.
+
+    **Required Permission**: vm:update
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    if not vm.proxmox_cluster:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM has no Proxmox cluster configured"
+        )
+
+    firewall_service = FirewallService(db)
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    await firewall_service.disable_firewall(
+        vm_id=vm_id,
+        organization_id=org_context.org_id,
+        proxmox_service=proxmox_service
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{vm_id}/firewall/resync")
+async def resync_firewall_rules(
+    vm_id: str,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_UPDATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Resync local firewall rules with Proxmox.
+
+    Deletes all Proxmox rules and recreates from local database.
+
+    **Required Permission**: vm:update
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    if not vm.proxmox_cluster:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM has no Proxmox cluster configured"
+        )
+
+    firewall_service = FirewallService(db)
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    result = await firewall_service.resync_rules(
+        vm_id=vm_id,
+        organization_id=org_context.org_id,
+        proxmox_service=proxmox_service
+    )
+    return result
+
+
+@router.get("/{vm_id}/firewall/rules", response_model=FirewallRuleListResponse)
+async def list_firewall_rules(
+    vm_id: str,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_READ)),
+    db: AsyncSession = Depends(get_db)
+):
+    """List firewall rules for a VM.
+
+    **Required Permission**: vm:read
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    firewall_service = FirewallService(db)
+    rules = await firewall_service.list_rules(vm_id, org_context.org_id)
+
+    return FirewallRuleListResponse(
+        rules=rules,
+        total=len(rules)
+    )
+
+
+@router.post(
+    "/{vm_id}/firewall/rules",
+    response_model=FirewallRuleResponse,
+    status_code=status.HTTP_201_CREATED
+)
+async def create_firewall_rule(
+    vm_id: str,
+    rule_data: FirewallRuleCreate,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_UPDATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a firewall rule for a VM.
+
+    Rule is stored locally and synced to Proxmox.
+
+    **Required Permission**: vm:update
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    if not vm.proxmox_cluster:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM has no Proxmox cluster configured"
+        )
+
+    firewall_service = FirewallService(db)
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    try:
+        rule = await firewall_service.create_rule(
+            vm_id=vm_id,
+            organization_id=org_context.org_id,
+            rule_data=rule_data,
+            proxmox_service=proxmox_service
+        )
+        return rule
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.get("/{vm_id}/firewall/rules/{rule_id}", response_model=FirewallRuleResponse)
+async def get_firewall_rule(
+    vm_id: str,
+    rule_id: str,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_READ)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get a single firewall rule.
+
+    **Required Permission**: vm:read
+    """
+    firewall_service = FirewallService(db)
+
+    try:
+        rule = await firewall_service.get_rule(rule_id, org_context.org_id)
+        return rule
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+
+
+@router.put(
+    "/{vm_id}/firewall/rules/{rule_id}",
+    response_model=FirewallRuleResponse
+)
+async def update_firewall_rule(
+    vm_id: str,
+    rule_id: str,
+    rule_data: FirewallRuleUpdate,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_UPDATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update a firewall rule.
+
+    **Required Permission**: vm:update
+    """
+    firewall_service = FirewallService(db)
+
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    if not vm.proxmox_cluster:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM has no Proxmox cluster configured"
+        )
+
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    try:
+        rule = await firewall_service.update_rule(
+            rule_id=rule_id,
+            organization_id=org_context.org_id,
+            rule_data=rule_data,
+            proxmox_service=proxmox_service
+        )
+        return rule
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+
+
+@router.delete(
+    "/{vm_id}/firewall/rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_firewall_rule(
+    vm_id: str,
+    rule_id: str,
+    org_context: OrgContext = Depends(RequirePermission(Permission.VM_UPDATE)),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a firewall rule.
+
+    **Required Permission**: vm:update
+    """
+    result = await db.execute(
+        select(VirtualMachine).where(
+            and_(
+                VirtualMachine.id == vm_id,
+                VirtualMachine.organization_id == org_context.org_id,
+                VirtualMachine.deleted_at.is_(None)
+            )
+        )
+    )
+    vm = result.scalar_one_or_none()
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"VM {vm_id} not found"
+        )
+
+    if not vm.proxmox_cluster:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="VM has no Proxmox cluster configured"
+        )
+
+    firewall_service = FirewallService(db)
+    proxmox_service = get_proxmox_service(vm.proxmox_cluster)
+
+    try:
+        await firewall_service.delete_rule(
+            rule_id=rule_id,
+            organization_id=org_context.org_id,
+            proxmox_service=proxmox_service
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
