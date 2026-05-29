@@ -1,4 +1,3 @@
-#!/bin/sh
 # Frontend entrypoint - set up env and start dev server
 
 # Use provided VITE_API_URL or default
@@ -8,4 +7,4 @@ echo "Starting Vite dev server..."
 echo "API URL: $VITE_API_URL"
 
 # Start npm dev
-npm run dev
+exec npm run dev

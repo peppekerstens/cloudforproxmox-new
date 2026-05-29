@@ -22,4 +22,4 @@ EXPOSE 3000
 ENV VITE_API_URL=http://192.168.2.186:8000/api/v1
 
 # Start development server via entrypoint
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["sh", "./entrypoint.sh"]
