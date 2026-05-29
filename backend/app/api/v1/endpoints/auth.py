@@ -156,8 +156,8 @@ async def login(
             detail="Inactive user account"
         )
 
-    # Update last login
-    user.last_login = datetime.now(timezone.utc)
+    # Update last login (use naive datetime for TIMESTAMP WITHOUT TIME ZONE column)
+    user.last_login = datetime.utcnow()
     await db.commit()
 
     # Create tokens

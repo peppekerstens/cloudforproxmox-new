@@ -14,5 +14,8 @@ COPY . .
 # Expose port
 EXPOSE 3000
 
-# Start development server
+# Set default API URL (can be overridden at runtime via env vars)
+ENV VITE_API_URL=http://192.168.2.186:8000/api/v1
+
+# Start development server directly
 CMD ["npm", "run", "dev"]

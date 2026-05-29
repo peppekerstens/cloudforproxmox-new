@@ -1,8 +1,8 @@
 # Documentation Index: Cloud for ProxMox Replay Project
 
-**Last Updated:** May 28, 2026  
-**Status:** Phase 0 Complete, Phase 1 Pending  
-**Total Documentation:** 15 markdown files, ~300KB
+**Last Updated:** May 29, 2026  
+**Status:** Phase 0 Complete, Phase 1 Batch 2 Complete  
+**Total Documentation:** 20+ markdown files, ~500KB
 
 ---
 
@@ -36,7 +36,14 @@
 - **DEPLOYMENT_TRACKING.md** (TBD) - Maps vm103 state to fork branches (per-batch)
 
 ### 🔌 Infrastructure Integration
-- **PROXMOX_CLUSTER_INTEGRATION.md** ⭐ (NEW - comprehensive guide)
+- **ADMIN_SETUP.md** ⭐ (NEW - critical setup guide)
+  - Admin user superadmin promotion (required for all deployments)
+  - Proxmox API token creation (one-time setup)
+  - Cluster registration procedure
+  - VM sync workflow
+  - Automated setup scripts for future deployments
+  
+- **PROXMOX_CLUSTER_INTEGRATION.md** ⭐ (comprehensive guide)
   - Complete cluster attachment procedure
   - API token creation and security
   - Testing and verification procedures
@@ -45,6 +52,33 @@
   - Integration checklist
 
 ### ⚙️ Operations & Safety
+- **DEPLOYMENT_ISSUES_AND_FIXES.md** ⭐ (NEW - complete deployment log)
+  - All issues encountered during Batch 2 deployment
+  - Root causes and fixes for each issue
+  - Code changes with commits
+  - Deployment checklist for future VMs
+  - Testing procedures and verification
+  
+- **PHASE1_BATCH2_TECHNICAL_GAPS.md** (13K) - Batch 2 limitations and deferred work
+  - Critical issues (firewall stubs, audit trail missing, power state sync)
+  - Secondary issues (Celery workers, audit log failures)
+  - Workarounds for Phase 1
+  - Phase 8 migration checklist
+  - Deployment resolution status
+  
+- **PHASE1_BATCH2_STUBS.md** (11K) - Stub module documentation
+  - 5 stub modules created for Batch 2
+  - File paths and commit hashes
+  - Behavior and limitations
+  - Phase 8 replacement instructions
+  - Testing procedures
+  
+- **PHASE1_BATCH2_QUICK_REFERENCE.md** (5K) - Quick lookup for Batch 2
+  - What's stubbed, what works
+  - Affected endpoints
+  - Diagnostic commands
+  - Document map
+
 - **INFRASTRUCTURE_SAFEGUARDS.md** (14K) - Snapshot rotation, batch testing, failure handling
 - **OPENCODE_RULES.md** (14K) - 40-rule handbook for this project
 - **OPENCODE_ASSESSMENT.md** (11K) - Assessment of OpenCode capabilities
@@ -60,7 +94,12 @@
 | **UPSTREAM_DEPLOYMENT_PREREQUISITES.md** ⭐ | Operations | 13K | Complete phase 0 guide: deployment, issues, solutions, config changes, Proxmox integration | ✅ DONE |
 | **PROXMOX_CLUSTER_INTEGRATION.md** ⭐ | Infrastructure | TBD | Cluster attachment guide: API token, registration, testing, troubleshooting | ✅ NEW |
 | **FORK_STRATEGY.md** ⭐ | Planning | 8.5K | Why fork was chosen (Option 2 selected) | ✅ DECIDED |
+| **ADMIN_SETUP.md** ⭐ | Infrastructure | 5K | Admin superadmin setup, Proxmox token creation, cluster registration | ✅ NEW |
+| **DEPLOYMENT_ISSUES_AND_FIXES.md** ⭐ | Operations | 15K | Complete log of Batch 2 deployment issues and fixes (6 issues, all resolved) | ✅ COMPLETE |
 | **REPLAY_STATUS.md** | Tracking | 6.5K | Current status, phases, deliverables, gate criteria | ✅ CURRENT |
+| PHASE1_BATCH2_TECHNICAL_GAPS.md | Operations | 13K | Batch 2 technical limitations, workarounds, Phase 8 migration | 📍 REFERENCE |
+| PHASE1_BATCH2_STUBS.md | Documentation | 11K | Stub module details: 5 stubs created for Batch 2 | 📍 REFERENCE |
+| PHASE1_BATCH2_QUICK_REFERENCE.md | Operations | 5K | Quick lookup: what's stubbed, what works, affected endpoints | 📍 LOOKUP |
 | REPLAY_PLAN_PHASE0-1.md | Planning | 96K | 179 commits for Setup & Foundation phase | 📍 REFERENCE |
 | REPLAY_PLAN_PHASE2-3.md | Planning | 14K | 22 commits for Network & Onboarding | 📍 REFERENCE |
 | REPLAY_PLAN_PHASE4-5.md | Planning | 29K | 51 commits for Multi-Tenant & RBAC | 📍 REFERENCE |
