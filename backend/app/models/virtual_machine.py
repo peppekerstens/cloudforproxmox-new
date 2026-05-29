@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from app.models.organization import Organization
     from app.models.vm_disk import VMDisk
     from app.models.vm_network_interface import VMNetworkInterface
+    from app.models.user import User
+    from app.models.proxmox_cluster import ProxmoxCluster
+    from app.models.usage_record import UsageRecord
 
 
 class VirtualMachine(BaseModel):
@@ -35,6 +38,9 @@ class VirtualMachine(BaseModel):
 
     # 'qemu' for VMs, 'lxc' for containers
     vm_type: Mapped[str] = mapped_column(String(10), nullable=False, default="qemu", index=True)
+
+    # Template flag - templates are immutable and used for cloning
+    is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
 
     # VM identification
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -78,10 +84,18 @@ class VirtualMachine(BaseModel):
     primary_ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
     mac_addresses: Mapped[Optional[dict]] = mapped_column(JSON, default=list, nullable=True)
 
+    # LXC root password (only for vm_type='lxc', null for qemu)
+    root_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     # Timestamps
-    provisioned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    stopped_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    provisioned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    stopped_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Metering fields (Phase 9)
+    last_state_change_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_metered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_network_metered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     owner: Mapped["User"] = relationship("User", foreign_keys=[owner_id], lazy="selectin")

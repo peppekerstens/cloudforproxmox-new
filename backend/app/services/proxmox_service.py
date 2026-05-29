@@ -1,7 +1,8 @@
 """
 Proxmox VE service wrapper for managing VMs via Proxmox API.
 """
-from typing import Optional, Dict, Any, List
+import asyncio
+from typing import Optional, Dict, Any, List, Tuple
 from proxmoxer import ProxmoxAPI
 from proxmoxer.core import ResourceException
 import logging
@@ -9,6 +10,63 @@ import logging
 from app.models.proxmox_cluster import ProxmoxCluster
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache: cluster_id -> ProxmoxService instance
+_service_cache: Dict[int, "ProxmoxService"] = {}
+_cache_lock = asyncio.Lock()
+
+
+def get_proxmox_service(cluster: ProxmoxCluster) -> "ProxmoxService":
+    """Return cached ProxmoxService for a cluster, creating if needed.
+
+    Thread-safe for async context. Reuses the same ProxmoxAPI connection
+    across requests for the same cluster.
+    """
+    cid = cluster.id
+    if cid in _service_cache:
+        return _service_cache[cid]
+    svc = ProxmoxService(cluster=cluster)
+    _service_cache[cid] = svc
+    return svc
+
+
+async def get_proxmox_service_async(cluster: ProxmoxCluster) -> "ProxmoxService":
+    """Async-safe version of get_proxmox_service for concurrent request handling."""
+    cid = cluster.id
+    if cid in _service_cache:
+        return _service_cache[cid]
+    async with _cache_lock:
+        # Double-check after acquiring lock
+        if cid in _service_cache:
+            return _service_cache[cid]
+        svc = ProxmoxService(cluster=cluster)
+        _service_cache[cid] = svc
+        return svc
+
+
+# Minimum Proxmox VE versions for feature support
+MIN_VERSIONS = {
+    "lxc": (4, 0),          # LXC containers (pct API)
+    "vm_template": (4, 0),   # VM → template conversion
+    "vm_clone": (4, 0),      # VM cloning
+    "vm_clone_target": (5, 0),  # Cross-node clone (target parameter)
+    "api_token_auth": (6, 2),   # API token authentication
+    "sdn": (7, 4),            # SDN (VXLAN zones) stable
+    "unprivileged_lxc": (4, 0),  # Unprivileged containers
+}
+
+
+class ProxmoxVersionError(Exception):
+    """Raised when Proxmox version does not support a feature."""
+
+    def __init__(self, feature: str, required: Tuple[int, int], actual: Tuple[int, int]):
+        self.feature = feature
+        self.required = required
+        self.actual = actual
+        super().__init__(
+            f"Feature '{feature}' requires Proxmox VE {'.'.join(map(str, required))}+, "
+            f"but running {'.'.join(map(str, actual))}"
+        )
 
 
 class ProxmoxService:
@@ -48,21 +106,7 @@ class ProxmoxService:
     def _get_connection(self) -> ProxmoxAPI:
         """Get or create Proxmox API connection."""
         if self._proxmox is None:
-            # Get credentials from cluster or direct parameters
-            if self.cluster:
-                host = self.cluster.api_url.replace("https://", "").replace("http://", "").split(":")[0]
-                user = self.cluster.api_username
-                token_name = self.cluster.api_token_id
-                token_value = self.cluster.api_token_secret_encrypted
-                password = self.cluster.api_password_encrypted
-                verify_ssl = self.cluster.verify_ssl
-            else:
-                host = self._host
-                user = self._user
-                token_name = self._token_name
-                token_value = self._token_value
-                password = self._password
-                verify_ssl = self._verify_ssl
+            host, port, user, token_name, token_value, password, verify_ssl = self._get_credentials()
 
             # Use token authentication if available, otherwise password
             if token_name and token_value:
@@ -74,6 +118,7 @@ class ProxmoxService:
                     user=user,
                     token_name=token_name,
                     token_value=token_value,
+                    port=port,
                     verify_ssl=verify_ssl,
                 )
             else:
@@ -81,28 +126,147 @@ class ProxmoxService:
                     host,
                     user=user,
                     password=password,
+                    port=port,
                     verify_ssl=verify_ssl,
                 )
 
         return self._proxmox
 
-    def get_next_vmid(self) -> int:
+    def _get_credentials(self) -> Tuple[str, int, str, Optional[str], Optional[str], Optional[str], bool]:
+        """Get connection credentials.
+
+        Returns:
+            Tuple of (host, port, user, token_name, token_value, password, verify_ssl)
+        """
+        if self.cluster:
+            if not self.cluster.api_url:
+                raise ValueError("ProxmoxCluster api_url is required")
+            from urllib.parse import urlparse
+            parsed = urlparse(self.cluster.api_url)
+            host = parsed.hostname
+            if not host:
+                raise ValueError(f"Invalid api_url: {self.cluster.api_url} (could not extract hostname)")
+            port = parsed.port or 8006  # Proxmox default port
+            user = self.cluster.api_username
+            token_name = self.cluster.api_token_id
+            token_value = self.cluster.api_token_secret_encrypted
+            password = self.cluster.api_password_encrypted
+            verify_ssl = self.cluster.verify_ssl
+        else:
+            host = self._host
+            port = 8006  # Default port for direct instantiation
+            user = self._user
+            token_name = self._token_name
+            token_value = self._token_value
+            password = self._password
+            verify_ssl = self._verify_ssl
+
+        return host, port, user, token_name, token_value, password, verify_ssl
+
+    def get_version_tuple(self) -> Tuple[int, int]:
+        """
+        Get Proxmox VE version as a (major, minor) tuple.
+
+        Returns:
+            Tuple of (major, minor) version numbers
+        """
+        version_data = self.get_version()
+        release = version_data.get("release", "0.0")
+        parts = release.split(".")
+        major = int(parts[0]) if len(parts) > 0 else 0
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        return (major, minor)
+
+    def check_feature_support(self, feature: str) -> None:
+        """
+        Check if the connected Proxmox version supports a feature.
+
+        Args:
+            feature: Feature name (see MIN_VERSIONS dict)
+
+        Raises:
+            ProxmoxVersionError: If version is too old
+        """
+        if feature not in MIN_VERSIONS:
+            logger.warning(f"Unknown feature '{feature}' — skipping version check")
+            return
+
+        required = MIN_VERSIONS[feature]
+        actual = self.get_version_tuple()
+
+        if actual < required:
+            raise ProxmoxVersionError(feature, required, actual)
+
+        logger.debug(f"Feature '{feature}' supported (Proxmox {'.'.join(map(str, actual))} >= {'.'.join(map(str, required))})")
+
+    def get_next_vmid(self, node: Optional[str] = None) -> int:
         """
         Get next available VMID from Proxmox cluster.
+
+        Uses Proxmox's nextid API with retry logic to handle race conditions
+        when multiple VMs are created simultaneously.
+
+        Args:
+            node: Optional node name to check VMID availability on.
+                  If provided, ensures the VMID doesn't already exist on that node.
 
         Returns:
             Next available VMID
         """
         try:
             proxmox = self._get_connection()
-            vmid = proxmox.cluster.nextid.get()
-            # Ensure we return an integer (Proxmox API may return string)
-            return int(vmid) if vmid else 100
-        except Exception as e:
-            logger.error(f"Failed to get next VMID: {e}")
-            # Fallback to a random high number if API call fails
+            for attempt in range(20):
+                vmid = proxmox.cluster.nextid.get()
+                vmid = int(vmid) if vmid else 100
+
+                if node:
+                    if self._vmid_exists_on_node(proxmox, node, vmid):
+                        logger.warning(f"VMID {vmid} already exists on node {node}, trying next")
+                        continue
+                return vmid
+
+            logger.error("Failed to find available VMID after 20 attempts")
             import random
             return random.randint(1000, 9999)
+        except ResourceException as e:
+            # Handle "VMID already exists" race condition
+            if "already exists" in str(e).lower():
+                logger.warning(f"VMID collision detected, retrying: {e}")
+                try:
+                    proxmox = self._get_connection()
+                    for attempt in range(20):
+                        vmid = proxmox.cluster.nextid.get()
+                        vmid = int(vmid) if vmid else 100
+                        if node and self._vmid_exists_on_node(proxmox, node, vmid):
+                            continue
+                        return vmid
+                except Exception:
+                    pass
+            logger.error(f"Failed to get next VMID: {e}")
+            import random
+            return random.randint(1000, 9999)
+        except Exception as e:
+            logger.error(f"Failed to get next VMID: {e}")
+            import random
+            return random.randint(1000, 9999)
+
+    def _vmid_exists_on_node(self, proxmox: ProxmoxAPI, node: str, vmid: int) -> bool:
+        """Check if a VMID already exists on a specific node."""
+        try:
+            try:
+                proxmox.nodes(node).qemu(vmid).config.get()
+                return True
+            except ResourceException:
+                pass
+            try:
+                proxmox.nodes(node).lxc(vmid).config.get()
+                return True
+            except ResourceException:
+                pass
+            return False
+        except Exception as e:
+            logger.warning(f"Error checking VMID {vmid} on node {node}: {e}")
+            return False
 
     def get_nodes(self) -> List[Dict[str, Any]]:
         """
@@ -139,6 +303,19 @@ class ProxmoxService:
         except Exception as e:
             logger.error(f"Failed to get version: {e}")
             return {}
+
+    def get_cluster_status(self) -> List[Dict[str, Any]]:
+        """Get cluster status including node IPs.
+
+        Returns:
+            List of cluster member dicts (nodes have ``ip``, ``name``, ``online``).
+        """
+        try:
+            proxmox = self._get_connection()
+            return proxmox.cluster.status.get()
+        except Exception as e:
+            logger.error(f"Failed to get cluster status: {e}")
+            return []
 
     def select_best_node(self) -> Optional[str]:
         """
@@ -264,6 +441,145 @@ class ProxmoxService:
             logger.error(f"Failed to stop VM {vmid}: {e}")
             raise
 
+    def update_vm_config(
+        self,
+        node: str,
+        vmid: int,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Update VM configuration.
+
+        Args:
+            node: Node name where VM is located
+            vmid: VM ID
+            **kwargs: Configuration parameters (cores, memory, name, ostype, etc.)
+
+        Returns:
+            Success status
+        """
+        try:
+            proxmox = self._get_connection()
+            proxmox.nodes(node).qemu(vmid).config.put(**kwargs)
+            logger.info(f"Updated VM {vmid} configuration on node {node}")
+            return {"status": "updated"}
+        except Exception as e:
+            logger.error(f"Failed to update VM {vmid} configuration: {e}")
+            raise
+
+    def create_lxc(
+        self,
+        node: str,
+        vmid: int,
+        ostemplate: str,
+        hostname: str,
+        password: str,
+        storage: str,
+        disk_size: int,
+        cores: int = 1,
+        memory: int = 512,
+        net0: str = "name=eth0,bridge=vmbr0,type=veth,firewall=1",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Create an LXC container.
+
+        Requires: Proxmox VE 4.0+ (LXC API), 4.0+ (unprivileged containers)
+
+        Args:
+            node: Target node name
+            vmid: Container ID
+            ostemplate: Template path (e.g., local:vztmpl/ubuntu-22.04-standard)
+            hostname: Container hostname
+            password: Root password
+            storage: Target storage for rootfs
+            disk_size: Rootfs size in GB
+            cores: CPU cores
+            memory: Memory in MB
+            net0: Network configuration
+
+        Returns:
+            Task ID and status
+
+        Raises:
+            ProxmoxVersionError: If Proxmox version < 4.0
+        """
+        self.check_feature_support("lxc")
+        self.check_feature_support("unprivileged_lxc")
+
+        try:
+            proxmox = self._get_connection()
+            config = {
+                "vmid": vmid,
+                "ostemplate": ostemplate,
+                "hostname": hostname,
+                "password": password,
+                "rootfs": f"{storage}:{disk_size}",
+                "cores": cores,
+                "memory": memory,
+                "net0": net0,
+                "unprivileged": 1,
+            }
+            config.update(kwargs)
+
+            logger.info(f"Creating LXC {vmid} ({hostname}) on node {node}")
+            task = proxmox.nodes(node).lxc.create(**config)
+
+            return {
+                "task_id": task,
+                "vmid": vmid,
+                "node": node,
+                "status": "creating"
+            }
+        except Exception as e:
+            logger.error(f"Failed to create LXC {vmid}: {e}")
+            raise
+
+    def start_lxc(self, node: str, vmid: int) -> Dict[str, Any]:
+        """
+        Start an LXC container.
+
+        Args:
+            node: Node name where container is located
+            vmid: Container ID
+
+        Returns:
+            Task ID and status
+        """
+        try:
+            proxmox = self._get_connection()
+            task = proxmox.nodes(node).lxc(vmid).status.start.post()
+            logger.info(f"Started LXC {vmid} on node {node}")
+            return {"task_id": task, "status": "starting"}
+        except Exception as e:
+            logger.error(f"Failed to start LXC {vmid}: {e}")
+            raise
+
+    def stop_lxc(self, node: str, vmid: int, force: bool = False) -> Dict[str, Any]:
+        """
+        Stop an LXC container.
+
+        Args:
+            node: Node name where container is located
+            vmid: Container ID
+            force: Force stop
+
+        Returns:
+            Task ID and status
+        """
+        try:
+            proxmox = self._get_connection()
+            if force:
+                task = proxmox.nodes(node).lxc(vmid).status.stop.post()
+            else:
+                task = proxmox.nodes(node).lxc(vmid).status.shutdown.post()
+
+            logger.info(f"Stopped LXC {vmid} on node {node} (force={force})")
+            return {"task_id": task, "status": "stopping"}
+        except Exception as e:
+            logger.error(f"Failed to stop LXC {vmid}: {e}")
+            raise
+
     def restart_vm(self, node: str, vmid: int) -> Dict[str, Any]:
         """
         Restart a VM.
@@ -302,6 +618,79 @@ class ProxmoxService:
             return {"task_id": task, "status": "deleting"}
         except Exception as e:
             logger.error(f"Failed to delete VM {vmid}: {e}")
+            raise
+
+    def convert_vm_to_template(self, node: str, vmid: int) -> Dict[str, Any]:
+        """
+        Convert a VM to a template on Proxmox.
+
+        Requires: Proxmox VE 4.0+ (template endpoint)
+
+        Args:
+            node: Node name where VM is located
+            vmid: VM ID
+
+        Returns:
+            Task ID and status
+
+        Raises:
+            ProxmoxVersionError: If Proxmox version < 4.0
+        """
+        self.check_feature_support("vm_template")
+
+        try:
+            proxmox = self._get_connection()
+            task = proxmox.nodes(node).qemu(vmid).template.post()
+            logger.info(f"Converted VM {vmid} to template on node {node}")
+            return {"task_id": task, "status": "converting"}
+        except Exception as e:
+            logger.error(f"Failed to convert VM {vmid} to template: {e}")
+            raise
+
+    def clone_vm_from_template(
+        self,
+        node: str,
+        template_vmid: int,
+        new_vmid: int,
+        name: str,
+        target_node: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Clone a VM from a template.
+
+        Requires: Proxmox VE 4.0+ (clone endpoint), 5.0+ for cross-node clone
+
+        Args:
+            node: Node name where template is located
+            template_vmid: Template VM ID
+            new_vmid: New VM ID
+            name: New VM name
+            target_node: Target node (defaults to source node)
+
+        Returns:
+            Task ID and status
+
+        Raises:
+            ProxmoxVersionError: If Proxmox version < 4.0 (or < 5.0 for cross-node)
+        """
+        self.check_feature_support("vm_clone")
+        if target_node:
+            self.check_feature_support("vm_clone_target")
+
+        try:
+            proxmox = self._get_connection()
+            params = {
+                "newid": new_vmid,
+                "name": name,
+            }
+            if target_node:
+                params["target"] = target_node
+
+            task = proxmox.nodes(node).qemu(template_vmid).clone.post(**params)
+            logger.info(f"Cloning template {template_vmid} to VM {new_vmid} on node {node}")
+            return {"task_id": task, "status": "cloning"}
+        except Exception as e:
+            logger.error(f"Failed to clone from template {template_vmid}: {e}")
             raise
 
     def get_console_url(self, node: str, vmid: int) -> Dict[str, Any]:
@@ -427,6 +816,9 @@ class ProxmoxService:
         try:
             proxmox = self._get_connection()
             storage_list = proxmox.nodes(node).storage.get()
+            # Ensure we have a list, not a ProxmoxResource wrapper
+            if not isinstance(storage_list, list):
+                storage_list = list(storage_list) if hasattr(storage_list, '__iter__') else []
             logger.info(f"Retrieved {len(storage_list)} storage pools from node {node}")
             return storage_list
         except Exception as e:
@@ -482,6 +874,9 @@ class ProxmoxService:
         """
         Upload an ISO file to Proxmox storage.
 
+        Uses requests directly because proxmoxer has issues with multipart
+        file uploads to the Proxmox upload endpoint.
+
         Args:
             node: Node name
             storage: Storage pool name
@@ -490,22 +885,48 @@ class ProxmoxService:
 
         Returns:
             Upload task information
-
-        Note:
-            This is a placeholder. Actual implementation requires multipart upload
-            or SCP transfer to Proxmox node, which is complex. Consider using
-            proxmox.nodes(node).storage(storage).upload for actual implementation.
         """
         try:
             proxmox = self._get_connection()
+            host, _, _, _, _, verify_ssl = self._get_credentials()
 
-            # Upload ISO using Proxmox API
+            # Build the upload URL
+            upload_url = f"https://{host}:8006/api2/json/nodes/{node}/storage/{storage}/upload"
+
+            # Get auth headers from proxmoxer's session
+            session = proxmox.get_session()
+
+            # Use the Authorization header from the session (works for both token and cookie auth)
+            auth_headers = {}
+            if "Authorization" in session.headers:
+                auth_headers["Authorization"] = session.headers["Authorization"]
+            else:
+                # Fallback to CSRF token for cookie-based auth
+                auth_headers["CSRFPreventionToken"] = session.headers.get("CSRFPreventionToken", "")
+
+            # Prepare multipart form data
             with open(file_path, 'rb') as iso_file:
-                task = proxmox.nodes(node).storage(storage).upload.post(
-                    content='iso',
-                    filename=filename,
-                    file=iso_file
+                files = {
+                    'file': (filename, iso_file, 'application/octet-stream'),
+                }
+                data = {
+                    'content': 'iso',
+                    'filename': filename,
+                }
+
+                response = session.post(
+                    upload_url,
+                    files=files,
+                    data=data,
+                    headers=auth_headers,
+                    verify=verify_ssl,
                 )
+
+            if response.status_code not in (200, 201):
+                raise Exception(f"ISO upload failed with status {response.status_code}: {response.text}")
+
+            result = response.json()
+            task = result.get('data')
 
             logger.info(f"Uploaded ISO {filename} to {storage} on node {node}")
             return {"task_id": task, "status": "uploading"}
@@ -1124,6 +1545,135 @@ class ProxmoxService:
             logger.error(f"Failed to resize VM {vmid}: {e}")
             raise
 
+    # ------------------------------------------------------------------ #
+    #  SDN (Software Defined Network) methods
+    # ------------------------------------------------------------------ #
+
+    def get_sdn_zones(self) -> List[Dict[str, Any]]:
+        """List all SDN zones on the cluster.
+
+        Returns:
+            List of zone dicts (each with ``zone``, ``type``, …)
+        """
+        try:
+            proxmox = self._get_connection()
+            return proxmox.cluster.sdn.zones.get()
+        except Exception as e:
+            logger.error(f"Failed to list SDN zones: {e}")
+            return []
+
+    def create_sdn_zone(self, zone: str, zone_type: str, **kwargs) -> Dict[str, Any]:
+        """Create an SDN zone.
+
+        Args:
+            zone: Zone name (e.g. ``isp-vxlan``)
+            zone_type: Zone type (``vlan``, ``vxlan``, ``simple``, …)
+            **kwargs: Additional zone parameters passed to the API
+
+        Returns:
+            API result
+
+        Raises:
+            RuntimeError: If zone creation fails
+        """
+        try:
+            proxmox = self._get_connection()
+            payload = {"zone": zone, "type": zone_type, **kwargs}
+            result = proxmox.cluster.sdn.zones.post(**payload)
+            logger.info(f"Created SDN zone {zone} (type={zone_type})")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to create SDN zone {zone}: {e}")
+            raise RuntimeError(f"Failed to create SDN zone {zone}: {e}") from e
+
+    def create_sdn_vnet(self, vnet_name: str, zone: str, **kwargs) -> Dict[str, Any]:
+        """Create an SDN VNet.
+
+        The VNet must belong to an existing zone. For VLAN zones you need
+        ``tag=<vlan_id>``; for VXLAN zones you need ``vni=<vni>``.
+
+        Args:
+            vnet_name: VNet name (max 12 chars — ``vn-{name}`` must be <= 15)
+            zone: Zone name
+            **kwargs: VNet parameters (tag, vni, …)
+
+        Returns:
+            API result
+
+        Raises:
+            RuntimeError: If VNet creation fails
+        """
+        try:
+            proxmox = self._get_connection()
+            payload = {"vnet": vnet_name, "zone": zone, **kwargs}
+            result = proxmox.cluster.sdn.vnets.post(**payload)
+            logger.info(f"Created SDN VNet {vnet_name} in zone {zone}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to create SDN VNet {vnet_name}: {e}")
+            raise RuntimeError(f"Failed to create SDN VNet {vnet_name}: {e}") from e
+
+    def delete_sdn_vnet(self, vnet_name: str) -> Dict[str, Any]:
+        """Delete an SDN VNet.
+
+        Args:
+            vnet_name: VNet name to delete
+
+        Returns:
+            API result
+
+        Raises:
+            RuntimeError: If deletion fails
+        """
+        try:
+            proxmox = self._get_connection()
+            result = proxmox.cluster.sdn.vnets(vnet_name).delete()
+            logger.info(f"Deleted SDN VNet {vnet_name}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to delete SDN VNet {vnet_name}: {e}")
+            raise RuntimeError(f"Failed to delete SDN VNet {vnet_name}: {e}") from e
+
+    def apply_sdn(self) -> Dict[str, Any]:
+        """Apply pending SDN configuration changes.
+
+        Must be called after creating / deleting zones or VNets.
+
+        Returns:
+            API result
+        """
+        try:
+            proxmox = self._get_connection()
+            result = proxmox.cluster.sdn.put()
+            logger.info("Applied SDN configuration")
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to apply SDN configuration: {e}")
+            return {}
+
+    def get_vm_rrd_data(self, node: str, vmid: int, timeframe: str = "hour") -> List[Dict]:
+        """Get VM resource usage data from Proxmox RRD API.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM ID
+            timeframe: hour, day, week, month, year
+
+        Returns:
+            List of RRD data points with netin/netout bytes
+        """
+        try:
+            proxmox = self._get_connection()
+            result = proxmox.nodes(node).qemu(vmid).rrd.get(timeframe=timeframe, cf="AVERAGE")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get RRD data for VM {vmid} on node {node}: {e}")
+            return []
+
+    # ------------------------------------------------------------------ #
+    #  Network config helpers
+    # ------------------------------------------------------------------ #
+
     def build_network_config(
         self,
         interface_name: str,
@@ -1277,3 +1827,296 @@ class ProxmoxService:
         logger.info(f"Detached network interface {interface_name} from VM {vmid}")
 
         return result
+
+    # ==================== Firewall Methods ====================
+
+    def get_vm_firewall_options(
+        self,
+        node: str,
+        vmid: int,
+        vm_type: str = "qemu"
+    ) -> Dict[str, Any]:
+        """Get firewall options for a VM/CT.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM/CT ID on Proxmox
+            vm_type: 'qemu' or 'lxc'
+
+        Returns:
+            Dict of firewall options
+        """
+        proxmox = self._get_connection()
+        if vm_type == "lxc":
+            return proxmox.nodes(node).lxc(vmid).firewall.options.get()
+        return proxmox.nodes(node).qemu(vmid).firewall.options.get()
+
+    def enable_vm_firewall(
+        self,
+        node: str,
+        vmid: int,
+        vm_type: str = "qemu"
+    ) -> None:
+        """Enable firewall for a VM/CT.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM/CT ID on Proxmox
+            vm_type: 'qemu' or 'lxc'
+        """
+        proxmox = self._get_connection()
+        params = {"enable": 1}
+        if vm_type == "lxc":
+            proxmox.nodes(node).lxc(vmid).firewall.options.put(**params)
+        else:
+            proxmox.nodes(node).qemu(vmid).firewall.options.put(**params)
+        logger.info(f"Enabled firewall for {vm_type} {vmid} on {node}")
+
+    def disable_vm_firewall(
+        self,
+        node: str,
+        vmid: int,
+        vm_type: str = "qemu"
+    ) -> None:
+        """Disable firewall for a VM/CT.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM/CT ID on Proxmox
+            vm_type: 'qemu' or 'lxc'
+        """
+        proxmox = self._get_connection()
+        params = {"enable": 0}
+        if vm_type == "lxc":
+            proxmox.nodes(node).lxc(vmid).firewall.options.put(**params)
+        else:
+            proxmox.nodes(node).qemu(vmid).firewall.options.put(**params)
+        logger.info(f"Disabled firewall for {vm_type} {vmid} on {node}")
+
+    def get_vm_firewall_rules(
+        self,
+        node: str,
+        vmid: int,
+        vm_type: str = "qemu"
+    ) -> List[Dict[str, Any]]:
+        """List firewall rules for a VM/CT.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM/CT ID on Proxmox
+            vm_type: 'qemu' or 'lxc'
+
+        Returns:
+            List of rule dicts with 'pos' field
+        """
+        proxmox = self._get_connection()
+        if vm_type == "lxc":
+            return proxmox.nodes(node).lxc(vmid).firewall.rules.get()
+        return proxmox.nodes(node).qemu(vmid).firewall.rules.get()
+
+    def create_vm_firewall_rule(
+        self,
+        node: str,
+        vmid: int,
+        vm_type: str = "qemu",
+        **rule_params
+    ) -> None:
+        """Create a firewall rule for a VM/CT.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM/CT ID on Proxmox
+            vm_type: 'qemu' or 'lxc'
+            **rule_params: Rule parameters (type, action, source, dest, etc.)
+        """
+        proxmox = self._get_connection()
+        if vm_type == "lxc":
+            proxmox.nodes(node).lxc(vmid).firewall.rules.post(**rule_params)
+        else:
+            proxmox.nodes(node).qemu(vmid).firewall.rules.post(**rule_params)
+        logger.info(
+            f"Created firewall rule for {vm_type} {vmid} on {node}: "
+            f"{rule_params.get('type')} {rule_params.get('action')}"
+        )
+
+    def update_vm_firewall_rule(
+        self,
+        node: str,
+        vmid: int,
+        vm_type: str = "qemu",
+        pos: int = 0,
+        **rule_params
+    ) -> None:
+        """Update a firewall rule for a VM/CT.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM/CT ID on Proxmox
+            vm_type: 'qemu' or 'lxc'
+            pos: Rule position in the ruleset
+            **rule_params: Updated rule parameters
+        """
+        proxmox = self._get_connection()
+        if vm_type == "lxc":
+            proxmox.nodes(node).lxc(vmid).firewall.rules(pos).put(**rule_params)
+        else:
+            proxmox.nodes(node).qemu(vmid).firewall.rules(pos).put(**rule_params)
+        logger.info(f"Updated firewall rule at pos {pos} for {vm_type} {vmid} on {node}")
+
+    def delete_vm_firewall_rule(
+        self,
+        node: str,
+        vmid: int,
+        vm_type: str = "qemu",
+        pos: int = 0
+    ) -> None:
+        """Delete a firewall rule from a VM/CT.
+
+        Args:
+            node: Proxmox node name
+            vmid: VM/CT ID on Proxmox
+            vm_type: 'qemu' or 'lxc'
+            pos: Rule position in the ruleset
+        """
+        proxmox = self._get_connection()
+        if vm_type == "lxc":
+            proxmox.nodes(node).lxc(vmid).firewall.rules(pos).delete()
+        else:
+            proxmox.nodes(node).qemu(vmid).firewall.rules(pos).delete()
+        logger.info(f"Deleted firewall rule at pos {pos} for {vm_type} {vmid} on {node}")
+
+    # ==================== Async Wrappers ====================
+    # These methods wrap sync Proxmox API calls in asyncio.to_thread()
+    # to prevent blocking the event loop when called from async endpoints.
+
+    async def get_next_vmid_async(self, node: Optional[str] = None) -> int:
+        """Async wrapper for get_next_vmid."""
+        return await asyncio.to_thread(self.get_next_vmid, node)
+
+    async def select_best_node_async(self) -> Optional[str]:
+        """Async wrapper for select_best_node."""
+        return await asyncio.to_thread(self.select_best_node)
+
+    async def create_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for create_vm."""
+        return await asyncio.to_thread(self.create_vm, *args, **kwargs)
+
+    async def start_vm_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for start_vm."""
+        return await asyncio.to_thread(self.start_vm, node, vmid)
+
+    async def stop_vm_async(self, node: str, vmid: int, force: bool = False) -> Dict[str, Any]:
+        """Async wrapper for stop_vm."""
+        return await asyncio.to_thread(self.stop_vm, node, vmid, force)
+
+    async def restart_vm_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for restart_vm."""
+        return await asyncio.to_thread(self.restart_vm, node, vmid)
+
+    async def delete_vm_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for delete_vm."""
+        return await asyncio.to_thread(self.delete_vm, node, vmid)
+
+    async def get_console_url_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for get_console_url."""
+        return await asyncio.to_thread(self.get_console_url, node, vmid)
+
+    async def get_vm_status_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for get_vm_status."""
+        return await asyncio.to_thread(self.get_vm_status, node, vmid)
+
+    async def force_stop_vm_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for force_stop_vm."""
+        return await asyncio.to_thread(self.force_stop_vm, node, vmid)
+
+    async def reboot_vm_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for reboot_vm."""
+        return await asyncio.to_thread(self.reboot_vm, node, vmid)
+
+    async def reset_vm_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for reset_vm."""
+        return await asyncio.to_thread(self.reset_vm, node, vmid)
+
+    async def resize_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for resize_vm."""
+        return await asyncio.to_thread(self.resize_vm, *args, **kwargs)
+
+    async def convert_vm_to_template_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for convert_vm_to_template."""
+        return await asyncio.to_thread(self.convert_vm_to_template, node, vmid)
+
+    async def clone_vm_from_template_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for clone_vm_from_template."""
+        return await asyncio.to_thread(self.clone_vm_from_template, *args, **kwargs)
+
+    async def create_lxc_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for create_lxc."""
+        return await asyncio.to_thread(self.create_lxc, *args, **kwargs)
+
+    async def start_lxc_async(self, node: str, vmid: int) -> Dict[str, Any]:
+        """Async wrapper for start_lxc."""
+        return await asyncio.to_thread(self.start_lxc, node, vmid)
+
+    async def stop_lxc_async(self, node: str, vmid: int, force: bool = False) -> Dict[str, Any]:
+        """Async wrapper for stop_lxc."""
+        return await asyncio.to_thread(self.stop_lxc, node, vmid, force)
+
+    async def get_storage_pools_async(self, node: str) -> List[Dict[str, Any]]:
+        """Async wrapper for get_storage_pools."""
+        return await asyncio.to_thread(self.get_storage_pools, node)
+
+    async def get_storage_content_async(self, node: str, storage: str, content_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Async wrapper for get_storage_content."""
+        return await asyncio.to_thread(self.get_storage_content, node, storage, content_type)
+
+    async def build_network_config_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for build_network_config."""
+        return await asyncio.to_thread(self.build_network_config, *args, **kwargs)
+
+    async def attach_network_to_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for attach_network_to_vm."""
+        return await asyncio.to_thread(self.attach_network_to_vm, *args, **kwargs)
+
+    async def detach_network_from_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for detach_network_from_vm."""
+        return await asyncio.to_thread(self.detach_network_from_vm, *args, **kwargs)
+
+    async def mount_iso_to_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for mount_iso_to_vm."""
+        return await asyncio.to_thread(self.mount_iso_to_vm, *args, **kwargs)
+
+    async def unmount_iso_from_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for unmount_iso_from_vm."""
+        return await asyncio.to_thread(self.unmount_iso_from_vm, *args, **kwargs)
+
+    async def list_snapshots_async(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        """Async wrapper for list_snapshots."""
+        return await asyncio.to_thread(self.list_snapshots, *args, **kwargs)
+
+    async def create_snapshot_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for create_snapshot."""
+        return await asyncio.to_thread(self.create_snapshot, *args, **kwargs)
+
+    async def rollback_snapshot_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for rollback_snapshot."""
+        return await asyncio.to_thread(self.rollback_snapshot, *args, **kwargs)
+
+    async def delete_snapshot_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for delete_snapshot."""
+        return await asyncio.to_thread(self.delete_snapshot, *args, **kwargs)
+
+    async def resize_disk_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for resize_disk."""
+        return await asyncio.to_thread(self.resize_disk, *args, **kwargs)
+
+    async def test_connection_async(self) -> bool:
+        """Async wrapper for test_connection."""
+        return await asyncio.to_thread(self.test_connection)
+
+    async def add_disk_to_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for add_disk_to_vm."""
+        return await asyncio.to_thread(self.add_disk_to_vm, *args, **kwargs)
+
+    async def detach_disk_from_vm_async(self, *args, **kwargs) -> Dict[str, Any]:
+        """Async wrapper for detach_disk_from_vm."""
+        return await asyncio.to_thread(self.detach_disk_from_vm, *args, **kwargs)

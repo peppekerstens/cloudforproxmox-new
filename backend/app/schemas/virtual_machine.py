@@ -22,32 +22,40 @@ class VMBase(BaseModel):
 
 # Request schemas
 class VMCreate(BaseModel):
-    """Schema for creating a new VM."""
+    """Schema for creating a new VM or LXC container."""
 
     name: str = Field(..., min_length=1, max_length=255)
     hostname: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
+
+    # VM type: 'qemu' for VMs, 'lxc' for containers
+    vm_type: str = Field(default="qemu", pattern="^(qemu|lxc)$")
 
     # Resource configuration
     cpu_cores: int = Field(2, ge=1, le=64)
     cpu_sockets: int = Field(1, ge=1, le=4)
     memory_mb: int = Field(2048, ge=512, le=524288)
 
-    # Disk configuration (legacy field for backward compatibility)
+    # Disk configuration (only for qemu VMs)
     disk_gb: Optional[int] = Field(None, ge=10, le=10240, description="DEPRECATED: Use disks[] instead")
 
-    # Multi-disk configuration
+    # Multi-disk configuration (only for qemu VMs)
     disks: List[DiskCreate] = Field(
         default_factory=lambda: [DiskCreate(size_gb=20, is_boot_disk=True)],
-        description="List of disks to attach to the VM"
+        description="List of disks to attach to the VM (qemu only)"
     )
 
-    # ISO boot configuration
-    iso_image_id: Optional[str] = Field(None, description="ISO image ID to mount for installation")
-    boot_order: Optional[str] = Field(None, max_length=100, description="Boot order (e.g., 'disk,cdrom')")
+    # ISO boot configuration (only for qemu VMs)
+    iso_image_id: Optional[str] = Field(None, description="ISO image ID to mount for installation (qemu only)")
+    boot_order: Optional[str] = Field(None, max_length=100, description="Boot order (qemu only)")
+
+    # LXC-specific configuration
+    ostemplate: Optional[str] = Field(None, description="LXC template path (e.g., local:vztmpl/ubuntu-22.04-standard) (lxc only)")
+    rootfs_size: Optional[int] = Field(None, ge=8, le=10240, description="LXC rootfs size in GB (lxc only)")
+    storage_pool: Optional[str] = Field("local-lvm", description="Storage pool for LXC rootfs (lxc only)")
 
     # Proxmox configuration
-    proxmox_cluster_id: Optional[str] = None  # Auto-select if not provided
+    proxmox_cluster_id: Optional[str] = None
     os_type: Optional[str] = None
 
     # Network (optional for now)
@@ -154,12 +162,16 @@ class VMResponse(BaseModel):
 
     # Proxmox
     vm_type: str
+    is_template: bool
     proxmox_vmid: int
     proxmox_node: Optional[str]
     proxmox_cluster: ProxmoxClusterInfo
 
     # Network
     primary_ip_address: Optional[str]
+
+    # LXC root password (only for vm_type='lxc')
+    root_password: Optional[str] = None
 
     # Owner
     owner: VMOwnerInfo
@@ -234,3 +246,47 @@ class VMResize(BaseModel):
     cpu_cores: Optional[int] = Field(None, ge=1, le=128, description="Number of CPU cores")
     cpu_sockets: Optional[int] = Field(None, ge=1, le=4, description="Number of CPU sockets")
     memory_mb: Optional[int] = Field(None, ge=512, le=524288, description="Memory in MB (512MB - 512GB)")
+
+
+class VMTemplateCreate(BaseModel):
+    """Schema for converting a VM to a template."""
+
+    name: str = Field(..., min_length=1, max_length=255, description="Template name")
+    description: Optional[str] = Field(None, description="Template description")
+    os_type: Optional[str] = Field(None, max_length=50, description="OS type")
+    tags: Optional[List[str]] = Field(default_factory=list, description="Template tags")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "ubuntu-22.04-base",
+                "description": "Base Ubuntu 22.04 template with cloud-init",
+                "os_type": "linux",
+                "tags": ["ubuntu", "base", "cloud-init"]
+            }
+        }
+    )
+
+
+class VMCloneRequest(BaseModel):
+    """Schema for cloning a VM from a template."""
+
+    name: str = Field(..., min_length=1, max_length=255, description="New VM name")
+    hostname: Optional[str] = Field(None, max_length=255, description="VM hostname")
+    description: Optional[str] = Field(None, description="VM description")
+    cpu_cores: Optional[int] = Field(None, ge=1, le=64, description="CPU cores (overrides template)")
+    memory_mb: Optional[int] = Field(None, ge=512, le=524288, description="Memory in MB (overrides template)")
+    proxmox_cluster_id: Optional[str] = Field(None, description="Target cluster (auto-select if not provided)")
+    network_id: Optional[str] = Field(None, description="Target network")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "web-server-01",
+                "hostname": "web01.example.com",
+                "description": "Production web server cloned from template",
+                "cpu_cores": 4,
+                "memory_mb": 8192
+            }
+        }
+    )
