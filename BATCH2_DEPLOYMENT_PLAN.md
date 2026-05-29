@@ -1,93 +1,78 @@
-# Phase 1 Batch 2: Deployment Plan
+# Phase 1 Batch 2: Deployment Plan (Snapshot-Based)
 
 **Status:** Ready for deployment  
 **Date:** 2026-05-29  
 **Target:** vm152 on pve2 (192.168.2.187)  
-**Branch:** `cloudforproxmox-new/phase-1-batch-2`
+**Branch:** `cloudforproxmox-new/phase-1-batch-2`  
+**Deployment Method:** Clone from Batch 1 working snapshot + code update
 
 ---
 
-## Overview
+## Strategy: Snapshot Recovery (NOT Full Redeploy)
 
-Phase 1 Batch 2 adds 3 major features (LXC support, VM templates, cluster pages) on top of Batch 1 foundation.
+Full VM deployments are complex and error-prone. **New strategy:** Use existing working VMs and their snapshots as baselines.
 
-**Commits:** 10 commits (8bbd9b8..be13bb8)
-- LXC container creation support
-- VM template management (convert, list, clone)
-- Cluster detail page (/clusters/:id)
-- ISO transfer & Celery cleanup
-- Settings redirect fix
+**Available Baselines:**
+- **vm103** (pve2): Phase 1 Batch 1 working snapshot `phase-1-batch-1-final`
+- **vm151** (pve1): Phase 1 Batch 1 working snapshot `phase-1-batch1-main-branch-working`
+
+**Process:**
+1. Clone vm103 snapshot → vm152 (copies all state: OS, Docker, DB, credentials)
+2. Update code: `git checkout phase-1-batch-2`
+3. Run DB migrations if needed
+4. Test
+
+This avoids 30-45 min of Ubuntu install + Docker setup + credential copy.
 
 ---
 
-## Deployment Steps
+## Deployment (When Instructed)
 
-### 1. Create VM 152 on pve2
+### Step 1: Clone vm103 Snapshot to vm152
 
 ```bash
-# SSH to pve2
-ssh pve2
+# On pve2 console
+qm clone 103 152 --name cloud-platform-batch2 --full
 
-# Create VM (4vCPU, 4GB RAM, 20GB disk)
-qm create 152 \
-  --name cloud-platform-batch2 \
-  --memory 4096 \
-  --cores 4 \
-  --scsi0 local-lvm:20 \
-  --net0 model=virtio,bridge=vmbr0 \
-  --agent 1
+# Or restore from snapshot:
+qm snapshot rollback 103 phase-1-batch-1-final
+qm clone 103 152 --name cloud-platform-batch2 --full
 
-# Boot from Ubuntu 24.04 ISO
-qm set 152 --ide2 local:iso/ubuntu-24.04-live-server-amd64.iso,media=cdrom
+# Start vm152
 qm start 152
-
-# Access console and install Ubuntu
 ```
 
-### 2. Configure VM 152 Network
+### Step 2: Update Code to Batch 2
 
 ```bash
-# Get DHCP IP, then configure static
-ssh ubuntu@<DHCP_IP>
-sudo nano /etc/netplan/01-netcfg.yaml
+# SSH to vm152 (will have IP 192.168.2.187 from cloned config)
+ssh ubuntu@192.168.2.187
 
-# Set:
-# IP: 192.168.2.187/24
-# Gateway: 192.168.2.250
-# DNS: 8.8.8.8
-
-sudo netplan apply
-```
-
-### 3. Deploy Batch 2 Code
-
-```bash
-# Clone cloudforproxmox-new
-git clone https://github.com/peppekerstens/cloudforproxmox-new.git ~/cloud-platform-batch2
-cd ~/cloud-platform-batch2
+# Update code
+cd ~/cloud-platform-upstream  # (or ~/cloud-platform-batch2 if path differs)
+git remote set-url origin https://github.com/peppekerstens/cloudforproxmox-new.git
+git fetch origin
 git checkout phase-1-batch-2
 
-# Copy .env from vm103
-scp ubuntu@192.168.2.186:~/cloud-platform-upstream/.env ./.env
-
-# Verify .env (check all credentials are correct)
-cat .env | head -20
-
-# Start deployment
+# Restart containers with new code
+docker-compose down
 docker-compose up -d
 docker-compose logs -f api
 ```
 
-### 4. Wait for Containers
+### Step 3: Monitor Container Health
 
 ```bash
-# Monitor until 8/8 containers healthy
+# Wait for migrations + startup (~2 min)
 docker ps --format "table {{.Names}}\t{{.Status}}"
 
-# Expected: postgres, redis, rabbitmq, api, frontend, celery-beat, flower, celery-worker
+# Should show 8/8 containers running (postgres, redis, rabbitmq, api, frontend, celery-beat, flower, celery-worker)
+
+# Check API logs for errors
+docker logs cloud-platform-api
 ```
 
-### 5. Test Endpoints
+### Step 4: Quick Smoke Test
 
 ```bash
 # Login endpoint
@@ -95,53 +80,48 @@ curl -X POST http://192.168.2.187:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.org","password":"superadmin"}'
 
-# Should return: {"access_token": "...", "token_type": "bearer"}
+# Expected: {"access_token": "...", "token_type": "bearer"}
 
-# Check GUI
-curl -s http://192.168.2.187:3000/ | head -20
+# Dashboard
+curl -s http://192.168.2.187:3000/ | grep -q "<title>" && echo "✅ GUI loads"
 
-# Should return HTML with React app
+# Test Batch 2 LXC feature (if API endpoint exists)
+curl http://192.168.2.187:8000/api/v1/vms/lxc || echo "LXC endpoint not yet available"
 ```
 
-### 6. Verify New Batch 2 Features
+### Step 5: Create Snapshot
 
 ```bash
-# Test LXC endpoint (if implemented in API)
-curl http://192.168.2.187:8000/api/v1/vms/lxc
-
-# Test VM templates
-curl http://192.168.2.187:8000/api/v1/vms/templates
-
-# Test cluster detail page
-curl http://192.168.2.187:8000/api/v1/clusters/1
+# On pve2
+qm snapshot 152 phase-1-batch-2-final -d "Phase 1 Batch 2 verified, LXC + templates + cluster pages"
 ```
 
 ---
 
-## Rollback Plan
+## Recovery Plan
 
-If Batch 2 fails:
-1. Delete vm152: `qm destroy 152`
-2. Revert main to previous: `git checkout 11c0a9b`
-3. Redeploy from Batch 1 (vm103 snapshot exists)
+If Batch 2 fails during code update:
+1. **Quick rollback:** `git checkout phase-1-batch-1` + `docker-compose restart`
+2. **Full rollback:** `qm destroy 152` (keep snapshot `phase-1-batch-1-final` for next attempt)
 
 ---
 
 ## Success Criteria
 
-- [x] phase-1-batch-2 branch created
-- [x] 10 commits applied to branch
-- [ ] VM 152 created on pve2
+- [x] phase-1-batch-2 branch created & merged to main
+- [x] 10 commits applied to code
+- [ ] vm152 cloned from vm103 snapshot ← **Do this when instructed**
+- [ ] Batch 2 code deployed (git checkout)
 - [ ] 8/8 containers healthy
-- [ ] Login endpoint working
+- [ ] Login endpoint works
 - [ ] Dashboard loads
-- [ ] New features testable
+- [ ] snapshot `phase-1-batch-2-final` created
 
 ---
 
-## Notes
+## Why This Approach
 
-- Batch 2 adds significant features (LXC, templates) - test thoroughly
-- Monitor logs for migration issues (is_template column added to virtual_machines table)
-- If DB migration fails, may need to recreate DB and reseed
-- Keep vm103 snapshot as fallback reference
+1. **Speed:** Clone + code update takes ~5 min vs 30+ min full install
+2. **Reliability:** Known-good DB state, Docker config already correct
+3. **Easy rollback:** Snapshot recovery faster than troubleshooting
+4. **Consistency:** Every Batch starts from proven Batch 1 baseline

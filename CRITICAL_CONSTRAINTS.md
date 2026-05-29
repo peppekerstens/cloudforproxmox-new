@@ -210,6 +210,31 @@ NOTES: __________
 
 ---
 
+---
+
+### 6. DEPLOYMENT METHOD - SNAPSHOT-BASED RECOVERY (New as of 2026-05-29)
+
+**CONSTRAINT:** Batch deployments do NOT do full OS installs. Use snapshot cloning + code updates only.
+
+**REASON:** Complete redeploys are time-consuming and error-prone. Snapshot recovery is ~5 min vs 30+ min.
+
+**PROCESS:**
+1. Clone working baseline snapshot (e.g., vm103 phase-1-batch-1-final)
+2. Update code via git checkout
+3. Run DB migrations if needed
+4. Test
+
+**DO NOT:**
+- ❌ Create fresh VMs from ISO
+- ❌ Install Ubuntu, Docker, dependencies manually
+- ❌ Attempt full deployment automation
+
+**EXCEPTION:** Only perform full VM creation/setup if explicitly instructed by user for a specific reason.
+
+**REFERENCE:** BATCH2_DEPLOYMENT_PLAN.md (updated 2026-05-29)
+
+---
+
 ## 🛑 IF VIOLATING CONSTRAINT
 
 If constraints are about to be violated:
